@@ -1,0 +1,41 @@
+# macOS and editor metadata
+.DS_Store
+**/.DS_Store
+.vscode/
+~$*
+
+# R session and project-local state
+.Rhistory
+.RData
+.Ruserdata
+.Rproj.user/
+.Renviron
+
+# Environment and credential files
+.env
+.env.*
+!.env.example
+
+# Public inputs are distributed through Figshare, not Git
+/data/*
+!/data/.gitkeep
+
+# Generated analysis artifacts
+/results/*
+!/results/.gitkeep
+/figures/*
+!/figures/.gitkeep
+/tables/*
+!/tables/.gitkeep
+/cache/*
+!/cache/.gitkeep
+
+# Local working and diagnostic directories
+/scripts-manual/
+/test/
+
+# Common temporary files
+*.tmp
+*.log
+__pycache__/
+*.py[cod]
