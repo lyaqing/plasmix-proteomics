@@ -12,8 +12,7 @@ label_style <- list(size = 12, face = "bold")
 paths <- c(
     metadata = "data/study_metadata.xlsx", feature_metadata = "data/feature_metadata.tsv.gz",
     profiles = "data/protein_profiles_long.tsv.gz", detection = "results/detection_status.tsv.gz",
-    physchem = "data/physchem_matrix.tsv.gz",
-    analytical_statistics = "results/analytical_feature_statistics.tsv.gz"
+    physchem = "data/physchem_matrix.tsv.gz"
 )
 input_check <- tibble(Input = names(paths), Path = unname(paths), Exists = file.exists(paths))
 print(input_check)
@@ -26,7 +25,6 @@ valid_features <- unique(feat_meta$UniqueID)
 detection_status <- fread(paths["detection"])
 physchem_matrix <- fread(paths["physchem"])
 long_df <- fread(paths["profiles"])
-analytical_feature_statistics <- fread(paths["analytical_statistics"])
 
 required_hpa_columns <- c(
     "Entry", "BloodConc_log10_pgml", "Abundance_Source", "HPA_Protein_Class", "HPA_Subcellular"
@@ -471,8 +469,7 @@ write.xlsx(
         HPA_target_intensity_deciles = intensity_rank_data,
         HPA_protocol_values = abundance_plot_data,
         DIA_membership = dia_membership,
-        Platform_membership = platform_membership,
-        Analytical_feature_statistics = analytical_feature_statistics
+        Platform_membership = platform_membership
     ),
     output_file,
     overwrite = TRUE,
