@@ -705,12 +705,12 @@ stopifnot(
     !anyNA(st1_table)
 )
 
-fwrite(as.data.table(st1_table), "results/analytical_feature_statistics.tsv.gz", sep = "\t", na = "NA")
+write.xlsx(list(Analytical_feature_statistics = st1_table), "tables/SourceData_AnalyticalFeatureStatistics.xlsx", overwrite = TRUE, keepNA = TRUE, na.string = "NA")
 
 # 12. Final validation summary ----
 profile_outputs <- c(
     "data/protein_profiles_long.tsv.gz", "data/feature_metadata.tsv.gz", "data/study_metadata.xlsx",
-    "results/detection_status.tsv.gz", "results/analytical_feature_statistics.tsv.gz"
+    "results/detection_status.tsv.gz", "tables/SourceData_AnalyticalFeatureStatistics.xlsx"
 )
 stopifnot(all(file.exists(profile_outputs)))
 
