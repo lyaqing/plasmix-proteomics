@@ -6,6 +6,7 @@ use_packages(c("data.table", "tidyverse", "readxl", "openxlsx", "cowplot", "patc
 source("utils/figure_style.R")
 source("utils/differential_analysis.R")
 plasmix_theme <- if (is.function(theme_plasmix)) theme_plasmix() else theme_plasmix
+label_style <- list(size = 12, face = "bold")
 options(stringsAsFactors = FALSE)
 set.seed(2026)
 

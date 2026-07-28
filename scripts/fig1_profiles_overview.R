@@ -348,8 +348,7 @@ platform_grob <- grid.grabExpr({
 })
 
 subcellular_legend_grob <- grid.grabExpr(
-    draw(subcellular_legend, x = unit(0, "npc"), y = unit(0.5, "npc"), just = c("left", "center")),
-    device = transparent_offscreen
+    draw(subcellular_legend, x = unit(0, "npc"), y = unit(0.5, "npc"), just = c("left", "center"))
 )
 
 dia_plot <- as.ggplot(dia_grob) + theme(plot.margin = margin(0, -5, 0, 5))
