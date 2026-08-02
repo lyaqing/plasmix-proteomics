@@ -2,7 +2,7 @@
 
 # 0. Setup ----
 source("scripts/_project_setup.R")
-use_packages(c("data.table", "tidyverse", "readxl", "pbapply", "patchwork", "openxlsx", "showtext"))
+use_packages(c("data.table", "tidyverse", "readxl", "pbapply", "patchwork", "openxlsx", "showtext", "effsize"))
 source("utils/figure_style.R")
 source("utils/batch_correction.R")
 source("utils/benchmark_metrics.R")
@@ -983,8 +983,75 @@ p_cdf <- ggplot() +
 print(p_cdf)
 
 # 11. Panel e: physicochemical differences between integration-success and failure groups ----
-# Required existing objects:
-# df_physchem_display, physchem_dict, cat_colors, active_dt, plasmix_theme
+# 11.1 Prepare physicochemical comparison data ----
+final_physchem <- physchem_dict %>% filter(Retained == "Yes") %>% pull(Feature)
+consensus_voting_class <- consensus_voting %>%
+    group_by(Detailed_Type) %>%
+    mutate(
+        Threshold_Q75 = quantile(Success_Rate, 0.75, na.rm = TRUE),
+        Integration_Status = case_when(
+            Success_Rate == 0 ~ "Failed",
+            Success_Rate >= Threshold_Q75 ~ "Success",
+            TRUE ~ "Intermediate"
+        )
+    ) %>%
+    ungroup() %>%
+    filter(Integration_Status %in% c("Success", "Failed"))
+
+results_physchem <- map_dfr(unique(as.character(consensus_voting_class$Detailed_Type)), function(dt) {
+    df_sub <- consensus_voting_class %>%
+        filter(as.character(Detailed_Type) == dt) %>%
+        inner_join(physchem_matrix, by = c("UniProtID" = "Entry"))
+    map_dfr(final_physchem, function(feat) {
+        v_success <- suppressWarnings(as.numeric(df_sub[[feat]][df_sub$Integration_Status == "Success"]))
+        v_failed <- suppressWarnings(as.numeric(df_sub[[feat]][df_sub$Integration_Status == "Failed"]))
+        v_success <- v_success[is.finite(v_success)]
+        v_failed <- v_failed[is.finite(v_failed)]
+        if (length(v_success) < 5 || length(v_failed) < 5) return(NULL)
+        tibble(
+            Detailed_Type = dt,
+            Feature = feat,
+            Cliff_Delta = as.numeric(effsize::cliff.delta(v_success, v_failed)$estimate),
+            P_Value = suppressWarnings(wilcox.test(v_success, v_failed, exact = FALSE)$p.value)
+        )
+    })
+})
+
+df_physchem_summary <- results_physchem %>%
+    left_join(
+        physchem_dict %>%
+            transmute(
+                Feature,
+                Property,
+                Category = as.character(Category)
+            ),
+        by = "Feature"
+    ) %>%
+    mutate(
+        Fill_Status = case_when(
+            P_Value < 0.05 & Cliff_Delta > 0 ~ "Success-enriched",
+            P_Value < 0.05 & Cliff_Delta < 0 ~ "Failure-enriched",
+            TRUE ~ "Non-significant"
+        ),
+        Stars = case_when(
+            P_Value < 0.001 ~ "***",
+            P_Value < 0.01 ~ "**",
+            P_Value < 0.05 ~ "*",
+            TRUE ~ ""
+        )
+    )
+
+sig_features_to_display <- df_physchem_summary %>%
+    group_by(Feature) %>%
+    summarize(
+        Any_Significant = any(P_Value < 0.05, na.rm = TRUE),
+        .groups = "drop"
+    ) %>%
+    filter(Any_Significant) %>%
+    pull(Feature)
+
+df_physchem_display <- df_physchem_summary %>% filter(Feature %in% sig_features_to_display)
+
 legend_category_order <- names(cat_colors)
 
 # Preserve the original property order in physchem_dict
@@ -1045,11 +1112,7 @@ p_cat <- ggplot(df_cat, aes(x = "1", y = Property, fill = Category)) +
     )
 
 # Main Cliff's-delta bar plot
-cliff_colors <- c(
-    "Success-enriched" = "#3171b8",
-    "Failure-enriched" = "#EECEB7",
-    "Non-significant" = "#E0E0E0"
-)
+cliff_colors <- c("Success-enriched" = "#3171b8", "Failure-enriched" = "#EECEB7", "Non-significant" = "#E0E0E0")
 
 df_physchem_display$Fill_Status <- factor(df_physchem_display$Fill_Status, levels = names(cliff_colors))
 
