@@ -44,7 +44,7 @@ theme_plasmix <- function() {
 sample_order <- c("M", "Y", "P", "X", "F", "N")
 
 sample_color <- c(
-    M = "#3171b8", Y = "#53a949", P = "#6d3390", X = "#ffc65d", F = "#ae231c", N = "#6e6e6e",
+    M = "#3171b8", Y = "#398364", P = "#6d3390", X = "#F2B342", F = "#ae231c", N = "#6e6e6e",
     A = "#4cc3d9", E = "#f16745", A1 = "#4cc3d9", E1 = "#f16745", A2 = "#4cc4d96e", E2 = "#f1674569",
     PM = "#7bc8a4", BLK = "#febabd", QC = "#f780a1", CAL = "#e63568", NC = "#febabd", SC = "#f780a1",
     IPC = "#e63568", GW = "#c4c1c1", OF1 = "#dfd1c1", OF2 = "#c6a185", OF3 = "#876e4e", OF4 = "#654b3a", OF5 = "#270f0b"
