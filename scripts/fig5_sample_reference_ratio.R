@@ -117,7 +117,7 @@ p_pvca_final <- ggplot(pvca_plot_df, aes(x = fct_reorder(Effect_Display, Proport
 
 # 3. Ridge before/after SRR based on baseline data ----
 df_baseline <- long_df %>% filter(UniqueID %in% valid_features, Sample %in% study_samples, DataTier == "Baseline", Batch %in% meta_batch_ht$Batch)
-ref_anchors <- df_baseline %>% group_by(Batch, UniqueID) %>% summarize(Ref_Val = median(Value[Sample == "P"], na.rm = TRUE))
+ref_anchors <- df_baseline %>% group_by(Batch, UniqueID) %>% summarize(Ref_Val = mean(Value[Sample == "P"], na.rm = TRUE))
 df_srr <- df_baseline %>% left_join(ref_anchors) %>% mutate(SRR_Value = Value - Ref_Val)
 plot_srr_ridge <- df_srr %>%
     pivot_longer(cols = c(Value, SRR_Value), names_to = "Method", values_to = "Val") %>%
@@ -166,7 +166,7 @@ pca_expr_filt <- df_baseline %>%
 pca_expr_filt <- pca_expr_filt[, meta_sample_hq$ColName]
 pca_imputed <- impute_knn(pca_expr_filt, meta_sample_hq)
 
-ref_anchors <- df_baseline %>% group_by(Batch, UniqueID) %>% summarize(Ref_Val = median(Value[Sample == "P"], na.rm = TRUE))
+ref_anchors <- df_baseline %>% group_by(Batch, UniqueID) %>% summarize(Ref_Val = mean(Value[Sample == "P"], na.rm = TRUE))
 df_srr <- df_baseline %>% left_join(ref_anchors) %>% mutate(SRR_Value = Value - Ref_Val)
 expr_srr <- df_srr %>% filter(ColName %in% unique(meta_sample_hq$ColName)) %>% select(UniqueID, ColName, SRR_Value) %>% pivot_wider(names_from = ColName, values_from = SRR_Value) %>% column_to_rownames("UniqueID")
 pca_imputed_srr <- impute_knn(expr_srr[keep_features, ], meta_sample_hq)
