@@ -354,7 +354,6 @@ p_c <- ggplot(enrich_ext_summary, aes(x = FoldEnrichment, y = reorder(Descriptio
 
 # 8. Assemble and export ----
 final_fig <- ggarrange(p_a, p_b, p_c, nrow = 1, widths = c(0.9, 1, 1.2), labels = c("a", "b", "c"), font.label = label_style, label.x = 0, label.y = 1, hjust = -0.2, vjust = 1.2)
-final_fig
 ggsave("figures/ed4_plasmix_sex_gradient.pdf", final_fig, width = 10, height = 3)
 ggsave("figures/ed4_plasmix_sex_gradient.png", final_fig, width = 10, height = 3, dpi = 600, bg = "white")
 

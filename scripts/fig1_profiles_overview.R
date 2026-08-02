@@ -364,7 +364,7 @@ platform_panel <- ggarrange(
     label.x = 0, label.y = 1, hjust = -0.2, vjust = 1)
 
 upset_stack <- ggarrange(dia_panel, platform_panel, nrow = 2, align = "v")
-right <- ggarrange(upset_stack, legend_plot, nrow = 1, widths = c(1, 0.16), align = "h")
+right <- ggarrange(upset_stack, legend_plot, nrow = 1, widths = c(1, 0.163), align = "h")
 
 abundance_panel <- ggarrange(
     p_abundance + theme(plot.margin = margin(l = 5, t = 5, b = 5, r = 0)), nrow = 1, labels = "b",
