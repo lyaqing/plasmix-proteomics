@@ -437,7 +437,7 @@ ggsave("figures/fig3_cross_setting_concordance.png", figure3, width = 10, height
 
 write.xlsx(list(
     Cohort_magnitude = magnitude_data, Plasmix_Tier1 = tier1_plasmix, Pair_inventory = pair_inventory,
-    CAT_pair_curves = cat_pair_curves, CAT_summary = cat_summary, CAT_random_summary = cat_random_summary,
+    CAT_pair_curves = cat_pair_curves, CAT_summary = cat_summary,
     Profile_sMAPE_pair_results = profile_pair_results, Profile_sMAPE_matching_balance = profile_matching_balance, Profile_sMAPE_matched_proteins = profile_matched_proteins,
     CKB_measurement_pairs = ckb_measurement, CKB_measurement_summary = ckb_summary,
     CKB_trait_Pearson = ckb_traits %>% select(trait, trait_label, n_joint, n_zero, pearson_zero, pearson_joint, pearson_delta),

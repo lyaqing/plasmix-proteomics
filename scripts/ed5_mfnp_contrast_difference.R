@@ -307,7 +307,7 @@ if (nrow(foreground_outside_universe) > 0) {
 message("GO foreground: M/F = ", n_distinct(final_data$ENTREZID[final_data$Pair == "M/F"]),
         "; N/P = ", n_distinct(final_data$ENTREZID[final_data$Pair == "N/P"]),
         "; shared measured-protein universe = ", length(universe_entrez))
-# GO foreground: M/F = 107; N/P = 560; shared measured-protein universe = 12548
+# GO foreground: M/F = 100; N/P = 560; shared measured-protein universe = 12548
 
 run_go <- function(ont_use) {
     comp_res <- clusterProfiler::compareCluster(
