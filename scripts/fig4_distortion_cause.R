@@ -1311,9 +1311,7 @@ level_style <- createStyle(
 )
 integer_style <- createStyle(numFmt = "#,##0", halign = "left", valign = "center")
 decimal_2_style <- createStyle(numFmt = "0.00", halign = "left", valign = "center")
-decimal_3_style <- createStyle(numFmt = "0.000", halign = "left", valign = "center")
-decimal_4_style <- createStyle(numFmt = "0.0000", halign = "left", valign = "center")
-burden_style <- createStyle(numFmt = '0.0000"%"', halign = "left", valign = "center")
+burden_style <- createStyle(numFmt = "0.0000", halign = "left", valign = "center")
 
 # Response_envelope.
 writeData(
@@ -1331,7 +1329,7 @@ addStyle(
   gridExpand = TRUE, stack = TRUE
 )
 addStyle(
-  wb, "Response_envelope", decimal_3_style,
+  wb, "Response_envelope", decimal_2_style,
   rows = 2:(nrow(st_response_envelope) + 1), cols = c(4:9, 11:22),
   gridExpand = TRUE, stack = TRUE
 )
@@ -1376,7 +1374,7 @@ addStyle(
   gridExpand = TRUE, stack = TRUE
 )
 addStyle(
-  wb, "Model_summary", decimal_4_style,
+  wb, "Model_summary", decimal_2_style,
   rows = 2:(nrow(st_model_vip_display) + 1), cols = 11:12,
   gridExpand = TRUE, stack = TRUE
 )
