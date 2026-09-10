@@ -4,6 +4,7 @@
 source("scripts/_project_setup.R")
 use_packages(c("data.table", "tidyverse", "readxl", "ggridges", "ggrepel", "ggpubr", "patchwork", "openxlsx", "showtext", "clue"))
 source("utils/figure_style.R")
+source("utils/feature_mapping.R")
 plasmix_theme <- if (is.function(theme_plasmix)) theme_plasmix() else theme_plasmix
 set.seed(20260718)
 label_style <- list(size = 12, face = "bold")
@@ -33,10 +34,7 @@ if (n_distinct(meta_batch$Batch) != length(selected_batches)) stop("study_metada
 # 1. Inputs and external-effect assembly ----
 dea <- fread(paths["dea"]) %>% as_tibble()
 external_sex <- fread(paths["external_sex"]) %>% as_tibble()
-feature_metadata <- fread(paths["feature_metadata"]) %>% as_tibble() %>%
-    filter(!to_bool(Is_Protein_Group), !to_bool(Is_Unknown), !is.na(UniProtID), UniProtID != "") %>%
-    select(Platform, UniqueID, UniProtID) %>% distinct()
-unique_feature_map <- feature_metadata %>% group_by(Platform, UniqueID) %>% filter(n_distinct(UniProtID) == 1) %>% ungroup()
+feature_metadata <- analysis_feature_metadata(fread(paths["feature_metadata"]))
 
 plasmix_effect <- dea %>%
     filter(Pair == "M/F", Batch %in% c("OLK_P2_B1", "OLK_P2_B2"), Platform == "OLK", DataTier == "Calibrated", str_detect(ProcessLevel, regex("NPX", ignore_case = TRUE))) %>%
@@ -109,15 +107,23 @@ trc <- trc %>%
 if (!setequal(unique(trc$Batch), selected_batches)) stop("trc_feature_level.tsv.gz does not contain all 12 default batches")
 if (anyDuplicated(trc[c("Batch", "UniqueID")])) stop("Duplicate Batch × UniqueID keys remain after default-process filtering")
 
-protein_batch <- trc %>% inner_join(unique_feature_map, by = c("Platform", "UniqueID"), relationship = "many-to-one") %>%
+feature_id_map <- feature_metadata %>%
+    select(Platform, UniqueID, UniProtID) %>% distinct() %>%
+    group_by(Platform, UniqueID) %>% filter(n_distinct(UniProtID) == 1) %>% ungroup()
+batch_feature_map <- get_batch_analysis_features(
+    feature_metadata,
+    bind_rows(trc %>% select(Platform, Batch, UniqueID), dea %>% select(Platform, Batch, UniqueID)) %>% distinct()
+) %>% inner_join(feature_id_map, by = c("Platform", "UniqueID"), relationship = "many-to-one")
+
+protein_batch <- trc %>% inner_join(batch_feature_map, by = c("Platform", "Batch", "UniqueID"), relationship = "many-to-one") %>%
     group_by(Batch, UniProtID) %>% filter(n_distinct(UniqueID) == 1) %>% ungroup() %>%
     left_join(meta_batch, by = c("Batch", "Platform"), relationship = "many-to-one") %>%
     mutate(Figure3_eligible = (Is_Detected | ExpectedResponseValid) & is.finite(M) & is.finite(F), MF_effect = M - F)
 
 pair_type <- function(platform1, protocol1, platform2, protocol2) {
-    if (platform1 != platform2) return("Cross-platform")
-    if (protocol1 != protocol2) return("Cross-protocol")
-    "Inter-batch"
+    if (platform1 != platform2) return("Across platforms")
+    if (protocol1 != protocol2) return("Across protocols")
+    "Within protocol"
 }
 platform_combination <- function(platform1, platform2) {
     if (platform1 == platform2) return(platform1)
@@ -141,12 +147,12 @@ pair_tables <- map(combn(selected_batches, 2, simplify = FALSE), function(pair) 
 names(pair_tables) <- map_chr(pair_tables, ~first(.x$pair_id))
 pair_inventory <- map_dfr(pair_tables, ~summarise(.x, pair_id = first(pair_id), Batch1 = first(Batch1), Batch2 = first(Batch2), Pair_type = first(Pair_type), Platform_combination = first(Platform_combination), Common_evaluable = n(), Joint_valid = sum(Validity_status == "Joint-valid"), One_valid = sum(Validity_status == "One-valid"), Neither_valid = sum(Validity_status == "Neither-valid")))
 
-# 4. Panel b: Concordance at the top ----
+# 4. Panel b: Correspondence at the top ----
 dea_cat <- dea %>% filter(Pair %in% c("M/F", "N/P"), Batch %in% selected_batches) %>%
     filter((Platform == "DIA" & DataTier == "Baseline" & ProcessLevel == "Intensity") |
            (Platform == "SOM" & DataTier == "Calibrated" & ProcessLevel == "Calibrate") |
            (Platform == "OLK" & DataTier == "Calibrated" & str_detect(ProcessLevel, regex("NPX", ignore_case = TRUE)))) %>%
-    inner_join(unique_feature_map, by = c("Platform", "UniqueID"), relationship = "many-to-one") %>%
+    inner_join(batch_feature_map, by = c("Platform", "Batch", "UniqueID"), relationship = "many-to-one") %>%
     group_by(Batch, Pair, UniProtID) %>% filter(n_distinct(UniqueID) == 1) %>% slice(1) %>% ungroup() %>%
     filter(is.finite(logFC))
 
@@ -190,13 +196,13 @@ cat_summary <- cat_pair_curves %>%
 
 cols_platform <- c(DIA = "#155289", SOM = "#B33E90", OLK = "#489FA7")
 combo_colors <- c("DIA-OLK" = "#7f404a", "DIA-SOM" = "#5b4080", "OLK-SOM" = "#408073")
-pair_type_labels <- c("Inter-batch" = "Within protocol", "Cross-protocol" = "Across protocols", "Cross-platform" = "Across platforms")
 
 plot_cat_panel <- function(facet_name, show_y = FALSE) {
     sub_data <- filter(cat_summary, Pair_type == facet_name)
     if (!nrow(sub_data)) return(ggplot() + theme_void() + labs(title = facet_name))
-    max_x <- if (facet_name == "Cross-platform") 2000 else 10000
-    axis_breaks <- if (facet_name == "Cross-platform") c(10, 100, 2000) else c(10, 100, 1000, 10000)
+    max_x <- max(sub_data$TopN, na.rm = TRUE)
+    axis_breaks <- if (facet_name == "Across platforms") c(10, 100, 1500) else c(10, 100, 1000, 8000)
+    axis_breaks <- axis_breaks[axis_breaks <= max_x]
     axis_hjust <- c(.1, rep(.5, length(axis_breaks) - 2), .9)
     k_vals <- seq(10, max_x, by = 10)
     direction_pool <- bind_rows(map(cat_dea_tables, ~filter(.x, Pair_type == facet_name, Contrast == "M/F") %>% select(Effect1, Effect2))) %>%
@@ -207,19 +213,19 @@ plot_cat_panel <- function(facet_name, show_y = FALSE) {
         mutate(p_rand = p_match * TopN / max_x, expected = 100 * p_rand,
                sd = 100 * sqrt(TopN * p_rand * (1 - p_rand)) / TopN,
                lower = pmax(0, expected - 1.96 * sd), upper = pmin(100, expected + 1.96 * sd))
-    palette <- if (facet_name == "Cross-platform") combo_colors else cols_platform
-    legend_pos <- if (facet_name == "Cross-platform") c(0, 1) else c(1, 0)
-    legend_just <- if (facet_name == "Cross-platform") c(0, 1) else c(1, 0)
+    palette <- if (facet_name == "Across platforms") combo_colors else cols_platform
+    legend_pos <- if (facet_name == "Across platforms") c(0, 1) else c(1, 0)
+    legend_just <- if (facet_name == "Across platforms") c(0, 1) else c(1, 0)
     ggplot(sub_data, aes(TopN, Consistency, color = Color_Label, linetype = Contrast)) +
         geom_ribbon(data = random_ribbon, aes(TopN, ymin = lower, ymax = upper), inherit.aes = FALSE, fill = "grey90", alpha = .6) +
         geom_line(data = random_ribbon, aes(TopN, expected), inherit.aes = FALSE, linetype = "dashed", color = "black", linewidth = .45) +
         geom_line(linewidth = .6) +
         scale_color_manual(values = palette, breaks = names(palette)) +
         scale_linetype_manual(values = c("M/F" = "solid", "N/P" = "dotted")) +
-        scale_x_log10(limits = c(10, max_x), breaks = axis_breaks, expand = c(0, 0)) +
+        scale_x_log10(limits = c(10, max_x), breaks = axis_breaks, labels = scales::label_comma(), expand = c(0, 0)) +
         scale_y_continuous(limits = c(0, 100), breaks = seq(0, 100, 25), expand = c(0, 0)) +
-        labs(x = expression("Top " * italic(k) * " proteins"), y = if (show_y) "Concordance at top (%)" else NULL,
-            title = unname(pair_type_labels[facet_name]), color = NULL, linetype = NULL) +
+        labs(x = expression("Top " * italic(k) * " proteins"), y = if (show_y) "Correspondence at top (%)" else NULL,
+            title = facet_name, color = NULL, linetype = NULL) +
         plasmix_theme +
         theme(plot.title = element_text(size = 8.5, face = "bold", hjust = .5), panel.border = element_rect(color = "black", fill = NA, linewidth = .35),
               axis.text.x = element_text(hjust = axis_hjust),
@@ -228,9 +234,8 @@ plot_cat_panel <- function(facet_name, show_y = FALSE) {
               legend.background = element_blank(), legend.key = element_blank())
 }
 
-p_b <- plot_cat_panel("Inter-batch", TRUE) | plot_cat_panel("Cross-protocol") | plot_cat_panel("Cross-platform")
+p_b <- plot_cat_panel("Within protocol", TRUE) | plot_cat_panel("Across protocols") | plot_cat_panel("Across platforms")
 p_b <- p_b & theme(plot.margin = margin(3, 2, 2.5, 5))
-# p_b <- ggarrange(plot_cat_panel("Inter-batch", TRUE), plot_cat_panel("Cross-protocol"), plot_cat_panel("Cross-platform"), nrow = 1)
 
 # 5. Panel c: Matched profile sMAPE ----
 calculate_profile_smape <- function(M1, Y1, P1, X1, F1, M2, Y2, P2, X2, F2) {
@@ -278,8 +283,8 @@ profile_pair_results <- map_dfr(profile_matches, "result")
 if (!nrow(profile_pair_results)) stop("No batch pair contains both joint-valid and neither-valid proteins for Panel c")
 profile_summary <- profile_pair_results %>% group_by(Pair_type) %>% summarise(Eligible_pairs = n(), Pairs_favoring_joint = sum(Neither_minus_joint_sMAPE > 0), Median_difference = median(Neither_minus_joint_sMAPE), .groups = "drop")
 
-pair_levels <- c("Inter-batch", "Cross-protocol", "Cross-platform")
-pair_display_labels_c <- c("Inter-batch" = "Within\nprotocol", "Cross-protocol" = "Across\nprotocols", "Cross-platform" = "Across\nplatforms")
+pair_levels <- c("Within protocol", "Across protocols", "Across platforms")
+pair_display_labels_c <- c("Within protocol" = "Within\nprotocol", "Across protocols" = "Across\nprotocols", "Across platforms" = "Across\nplatforms")
 pair_display_levels_c <- rev(unname(pair_display_labels_c[pair_levels]))
 
 setting_levels <- c("DIA", "SOM", "OLK", "DIA-OLK", "DIA-SOM", "OLK-SOM")
@@ -437,12 +442,11 @@ ggsave("figures/fig3_cross_setting_concordance.png", figure3, width = 10, height
 
 write.xlsx(list(
     Cohort_magnitude = magnitude_data, Plasmix_Tier1 = tier1_plasmix, Pair_inventory = pair_inventory,
-    CAT_pair_curves = cat_pair_curves, CAT_summary = cat_summary, CAT_random_summary = cat_random_summary,
+    CAT_pair_curves = cat_pair_curves, CAT_summary = cat_summary,
     Profile_sMAPE_pair_results = profile_pair_results, Profile_sMAPE_matching_balance = profile_matching_balance, Profile_sMAPE_matched_proteins = profile_matched_proteins,
     CKB_measurement_pairs = ckb_measurement, CKB_measurement_summary = ckb_summary,
     CKB_trait_Pearson = ckb_traits %>% select(trait, trait_label, n_joint, n_zero, pearson_zero, pearson_joint, pearson_delta),
     CKB_trait_Spearman = ckb_traits %>% select(trait, trait_label, n_joint, n_zero, spearman_zero, spearman_joint, spearman_delta)
 ), "tables/SourceData_Figure3.xlsx", overwrite = TRUE, keepNA = TRUE, na.string = "NA")
 
-figure3
 message("Figure 3 completed: figures/fig3_cross_setting_concordance.pdf")

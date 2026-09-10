@@ -10,7 +10,7 @@ analysis_packages <- c(
     "ggrepel", "ggridges", "ggtext", "grid", "irr", "lightgbm", "limma", "matrixStats",
     "metap", "openxlsx", "org.Hs.eg.db", "patchwork", "pbapply", "pdp", "Peptides",
     "purrr", "randomForest", "readr", "readxl", "reticulate", "RColorBrewer", "scales",
-    "showtext", "smplot2", "SomaDataIO", "stringr", "tibble", "tidyr", "tidyverse", "xgboost"
+    "showtext", "smplot2", "SomaDataIO", "stringr", "tibble", "tidyr", "tidyverse", "xgboost", "effsize"
 )
 
 package_table <- data.frame(

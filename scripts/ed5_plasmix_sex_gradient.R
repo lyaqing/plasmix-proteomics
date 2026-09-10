@@ -1,4 +1,4 @@
-# Extended Data Figure 4 | Plasmix and UK Biobank sex gradients
+# Extended Data Figure 5 | Plasmix and UK Biobank sex gradients
 
 # 0. Setup ----
 source("scripts/_project_setup.R")
@@ -13,7 +13,7 @@ set.seed(2026)
 # 1. Inputs ----
 required_inputs <- c("results/dea_df_multi.tsv.gz", "results/external_sex_effects_long.tsv.gz", "data/feature_metadata.tsv.gz")
 missing_inputs <- required_inputs[!file.exists(required_inputs)]
-if (length(missing_inputs)) stop("Missing Extended Data Figure 4 inputs: ", paste(missing_inputs, collapse = ", "))
+if (length(missing_inputs)) stop("Missing Extended Data Figure 5 inputs: ", paste(missing_inputs, collapse = ", "))
 dea_df_multi <- fread("results/dea_df_multi.tsv.gz")
 sex_ext_df <- fread("results/external_sex_effects_long.tsv.gz")
 feat_meta <- fread("data/feature_metadata.tsv.gz") %>% filter(!Is_Protein_Group, !Is_Unknown)
@@ -129,10 +129,8 @@ ukb_res <- ukb_dea_raw %>%
 # Parse the UniProt accession from the Plasmix feature identifier before matching.
 plasmix_res <- dea_df_multi %>%
     filter(Batch %in% c("OLK_P2_B1", "OLK_P2_B2"), ProcessLevel == "NPX", Pair == "M/F") %>%
-    mutate(
-        Raw_UniProt = sapply(strsplit(as.character(UniqueID), "_", fixed = TRUE), `[`, 1),
-        UniProt = canonicalize_uniprot(Raw_UniProt)
-    ) %>%
+    mutate(Raw_UniProt = sapply(strsplit(as.character(UniqueID), "_", fixed = TRUE), `[`, 1),
+           UniProt = canonicalize_uniprot(Raw_UniProt)) %>%
     group_by(UniProt) %>%
     # Require detection in both batches and complete agreement in M/F effect direction.
     filter(n_distinct(Batch) == 2, all(logFC > 0, na.rm = TRUE) | all(logFC < 0, na.rm = TRUE)) %>%
@@ -148,7 +146,7 @@ base_df <- ultimate_match %>%
         # Operational excess-shift rule: UK Biobank change <= 5% and Plasmix change >= twofold.
         is_excess_shift = (abs(UKB_logFC) <= log2(1.05)) & (abs(Plasmix_logFC) >= log2(2))
     )
-cat(sprintf("Matched proteins retained for analysis: %d\n", nrow(base_df)))
+cat(sprintf("Matched Olink assay pairs retained for analysis: %d\n", nrow(base_df)))
 cat(sprintf("Excess-shift proteins: %d\n", sum(base_df$is_excess_shift)))
 
 # 5. Panel a: UK Biobank versus Plasmix effects ----
@@ -331,7 +329,7 @@ p_c <- ggplot(enrich_ext_summary, aes(x = FoldEnrichment, y = reorder(Descriptio
     geom_point(aes(size = Count, fill = -log10(p.adjust)), alpha = 0.8, color = "black", shape = 21) +
     scale_fill_viridis_c(option = "rocket", name = expression(bold(-log[10](P[adj]))), direction = -1, end = 0.8, breaks = c(1.5, 2.0, 2.5)) +
     facet_wrap(. ~ Ontology, scales = "free", space = "free_y", nrow = 2, labeller = labeller(Ontology = as_labeller(ontology_labs_ext))) +
-    scale_size_continuous(range = c(1, 5), name = "Feature count", breaks = c(5, 10, 20, 40)) +
+    scale_size_continuous(range = c(1, 5), name = "Protein count", breaks = c(5, 10, 20, 40)) +
     scale_y_discrete(labels = function(x) str_wrap(x, width = 70)) +
     scale_x_continuous(expand = expansion(mult = c(0, 0.1)), limits = c(0, NA)) +
     labs(x = "Fold enrichment", y = NULL) +
@@ -353,16 +351,15 @@ p_c <- ggplot(enrich_ext_summary, aes(x = FoldEnrichment, y = reorder(Descriptio
     )
 
 # 8. Assemble and export ----
-final_fig <- ggarrange(p_a, p_b, p_c, nrow = 1, widths = c(0.9, 1, 1.2), labels = c("a", "b", "c"), font.label = label_style, label.x = 0, label.y = 1, hjust = -0.2, vjust = 1.2)
-final_fig
-ggsave("figures/ed4_plasmix_sex_gradient.pdf", final_fig, width = 10, height = 3)
-ggsave("figures/ed4_plasmix_sex_gradient.png", final_fig, width = 10, height = 3, dpi = 600, bg = "white")
+final_fig <- ggpubr::ggarrange(p_a, p_b, p_c, nrow = 1, widths = c(0.9, 1, 1.2), labels = c("a", "b", "c"), font.label = label_style, label.x = 0, label.y = 1, hjust = -0.2, vjust = 1.2)
+ggsave("figures/ed5_plasmix_sex_gradient.pdf", final_fig, width = 10, height = 3)
+ggsave("figures/ed5_plasmix_sex_gradient.png", final_fig, width = 10, height = 3, dpi = 600, bg = "white")
 
 source_data <- list(
     "Matched_UKB_Plasmix" = base_df,
     "UKB_resampling" = resample_df,
     "Excess_shift_GO" = enrich_ext_summary
 )
-write.xlsx(source_data, "tables/SourceData_EDFigure4.xlsx", overwrite = TRUE, keepNA = TRUE, na.string = "NA")
+write.xlsx(source_data, "tables/SourceData_EDFigure5.xlsx", overwrite = TRUE, keepNA = TRUE, na.string = "NA")
 fwrite(enrich_ext_summary, "results/plasmix_ukb_enrichment.tsv.gz", sep = "\t", na = "NA")
-message("Extended Data Figure 4 completed: figures/ed4_plasmix_sex_gradient.pdf；source data: tables/SourceData_EDFigure4.xlsx")
+message("Extended Data Figure 5 completed: figures/ed5_plasmix_sex_gradient.pdf；source data: tables/SourceData_EDFigure5.xlsx")

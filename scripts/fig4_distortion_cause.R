@@ -4,16 +4,19 @@
 source("scripts/_project_setup.R")
 use_packages(c("data.table", "tidyverse", "readxl", "ggh4x", "ggpubr", "patchwork", "ggtext", "openxlsx", "showtext", "grid", "xgboost", "lightgbm"), c("pdp", "randomForest"))
 source("utils/figure_style.R")
+source("utils/feature_mapping.R")
 plasmix_theme <- if (is.function(theme_plasmix)) theme_plasmix() else theme_plasmix
 showtext_auto(); showtext_opts(dpi = 600)
 label_style <- list(size = 12, face = "bold")
-paths <- c(metadata = "data/study_metadata.xlsx", profiles = "data/protein_profiles_long.tsv.gz", detection = "results/detection_status.tsv.gz",
+paths <- c(metadata = "data/study_metadata.xlsx", feature_metadata = "data/feature_metadata.tsv.gz", profiles = "data/protein_profiles_long.tsv.gz", detection = "results/analyte_detection_status.tsv.gz",
            physchem = "data/physchem_matrix.tsv.gz", physchem_dictionary = "data/physchem_dictionary.tsv")
 missing_inputs <- paths[!file.exists(paths)]
 if (length(missing_inputs)) stop("Figure 4 is missing the following release inputs:\n", paste(missing_inputs, collapse = "\n"))
 meta_batch <- read_xlsx(paths["metadata"], sheet = "batch")
-long_df <- fread(paths["profiles"]) %>% as_tibble()
-lod_status <- fread(paths["detection"]) %>% as_tibble()
+feature_metadata <- analysis_feature_metadata(fread(paths["feature_metadata"]))
+# Combine SOMAmers before estimating protein-specific distortion.
+long_df <- aggregate_som_profiles(fread(paths["profiles"])) %>% filter_batch_analysis_features(feature_metadata, strict_platforms = character())
+lod_status <- fread(paths["detection"]) %>% as_tibble() %>% semi_join(distinct(long_df, Platform, Batch, UniqueID), by = c("Platform", "Batch", "UniqueID"))
 physchem_matrix <- fread(paths["physchem"]) %>% as_tibble()
 physchem_dict <- fread(paths["physchem_dictionary"]) %>% as_tibble()
 meta_batch_ht <- meta_batch %>% filter(Platform %in% c("SOM", "OLK", "DIA"), !Batch %in% c("OLK_P1_B1", "OLK_P1_B2"))
@@ -564,20 +567,14 @@ df_unified_all <- map_dfr(unique(meta_batch_ht$Batch), function(b) {
 
 # QC1: Near-zero native M/F ratios.
 quantile(abs(df_unified_all$Ratio_Raw), c(0, 0.01, 0.05, 0.1, 0.25, 0.5, 0.75, 0.99, 1), na.rm=TRUE)
-#         0%          1%          5%         10%         25%         50%         75%         99%        100%
-# 0.000000000 0.002295175 0.010959420 0.022154614 0.057365031 0.131979837 0.279302657 2.281298547 9.907053583
 
 # QC2: Sign reversals after perturbation.
 df_unified_all %>%
   filter(Valid_N, !is.na(Ratio_Raw), !is.na(Ratio_N)) %>%
   summarize(n = n(), n_flip = sum(sign(Ratio_Raw) != sign(Ratio_N)), frac_flip = mean(sign(Ratio_Raw) != sign(Ratio_N)))
-#       n n_flip frac_flip
-# 1 10277      0         0
 
 # QC3: Distribution of the raw model outcome.
 quantile(df_unified_all$Y_RelExpansion, c(0, 0.01, 0.25, 0.5, 0.75, 0.99, 1), na.rm=TRUE)
-#       0%        1%       25%       50%       75%       99%      100%
-# 1.002090  1.141996  2.193674  3.332472  4.911410  8.942242 10.414996
 
 # Batch- and platform-level expansion for batches containing P, N, M and F.
 expansion_input <- df_unified_all %>%
@@ -860,12 +857,12 @@ make_predictor_matrix <- function(df, seed) {
 
 # Balanced, reproducible row-wise folds shared by all three algorithms.
 make_row_folds <- function(n, k = 5, seed = 1) {
-    if(n < k) stop("The number of feature-batch observations is smaller than k_folds.", call. = FALSE)
+    if(n < k) stop("The number of protein-batch observations is smaller than k_folds.", call. = FALSE)
     set.seed(seed)
     sample(rep(seq_len(k), length.out = n))
 }
 
-# Primary estimand: prediction across observed feature–batch contexts.
+# Primary estimand: prediction across observed protein-batch contexts.
 calc_r2 <- function(observed, predicted) {
     valid <- is.finite(observed) & is.finite(predicted)
     observed <- observed[valid]; predicted <- predicted[valid]
@@ -952,7 +949,7 @@ for(ds_name in names(datasets)) {
         platform_metrics <- bind_rows(cv_metric_list) %>% filter(Dataset == ds_name, Platform == plat)
         table_model_list[[length(table_model_list) + 1]] <- platform_metrics %>% group_by(Algorithm) %>%
             summarize(R_Squared_Mean = mean(R_Squared, na.rm = TRUE), R_Squared_SD = sd(R_Squared, na.rm = TRUE), .groups = "drop") %>%
-            mutate(Platform = plat, Dataset = ds_name, CV_Unit = "Feature-batch row", Estimand = "Observed feature-batch context",
+            mutate(Platform = plat, Dataset = ds_name, CV_Unit = "Protein-batch row", Estimand = "Observed protein-batch context",
                    Target_Features = n_distinct(df_train$UniqueID),
                    Target_Proteins = n_distinct(df_train$UniProtID),
                    Total_Observations = nrow(df_train),
@@ -978,7 +975,7 @@ for(ds_name in names(datasets)) {
         global_models[[ds_name]][[plat]] <- list(RandomForest = rf_final, XGBoost = xgb_final, LightGBM = lgb_final,
             X_train_raw = x_matrix, X_train_rf = x_matrix_rf_full, RF_Impute_Values = rf_impute_values_full,
             Y_train = y_vector, Outcome = "log2(Y_RelExpansion)",
-            Protein_ID = df_train$UniProtID, Batch = df_train$Batch, CV_Unit = "Feature-batch row")
+            Protein_ID = df_train$UniProtID, Batch = df_train$Batch, CV_Unit = "Protein-batch row")
 
         rf_importance <- randomForest::importance(rf_final)[, "%IncMSE"]
         xgb_importance <- xgb.importance(model = xgb_final); xgb_importance <- setNames(xgb_importance$Gain, xgb_importance$Feature)
@@ -1017,7 +1014,7 @@ pc_bar <- ggplot(df_panel_c, aes(y = Platform, fill = Platform, alpha = Algorith
     plasmix_theme +
     coord_cartesian(clip = "off") +
     guides(alpha = guide_legend(override.aes = list(label = ""))) +
-    scale_x_continuous(limits = c(-2, 68), expand = c(0, 0)) +
+    scale_x_continuous(limits = c(-4, 72), expand = c(0, 0)) +
     theme(panel.grid.major = element_blank(), legend.position = "bottom",
           legend.margin = margin(0, 0, 0, 0),
           legend.box.margin = margin(-7, 0, 0, 30))
@@ -1228,7 +1225,7 @@ st_response_envelope <- bind_rows(section_a, section_b)
 # ST: Model R² and property-importance matrix.
 model_r2_wide <- df_panel_c %>%
   mutate(`R squared` = sprintf("%.2f ± %.2f%%", R_Squared_Mean, R_Squared_SD)) %>%
-  select(Platform, Dataset, Algorithm, `R squared`, Target_Features, Total_Observations) %>%
+  select(Platform, Dataset, Algorithm, `R squared`, Target_Proteins, Total_Observations) %>%
   pivot_wider(names_from = Algorithm, values_from = `R squared`, names_glue = "{Algorithm} R²")
 
 # Rank properties within each algorithm.
@@ -1267,8 +1264,8 @@ st_model_vip <- vip_matrix %>%
   left_join(model_r2_wide, by = c("Platform", "Dataset")) %>%
   select(
     Platform, Dataset,
-    `Target features` = Target_Features,
-    `Feature–batch observations` = Total_Observations,
+    `Target proteins` = Target_Proteins,
+    `Protein–batch observations` = Total_Observations,
     `RF R² (Mean ± SD)` = `RandomForest R²`,
     `XGB R² (Mean ± SD)` = `XGBoost R²`,
     `LGBM R² (Mean ± SD)` = `LightGBM R²`,

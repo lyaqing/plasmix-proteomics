@@ -6,6 +6,7 @@ use_packages(c("data.table", "tidyverse", "readxl", "ggpubr", "ggpp", "openxlsx"
 source("utils/benchmark_metrics.R")
 source("utils/imputation.R")
 source("utils/figure_style.R")
+source("utils/feature_mapping.R")
 plasmix_theme <- if (is.function(theme_plasmix)) theme_plasmix() else theme_plasmix
 label_style <- list(size = 12, face = "bold")
 set.seed(2026)
@@ -13,7 +14,7 @@ trc_deviation_cutoff <- 0.25
 
 # 1. Inputs ----
 paths <- c(metadata = "data/study_metadata.xlsx", feature_metadata = "data/feature_metadata.tsv.gz",
-           profiles = "data/protein_profiles_long.tsv.gz", detection = "results/detection_status.tsv.gz")
+           profiles = "data/protein_profiles_long.tsv.gz", detection = "results/analyte_detection_status.tsv.gz")
 missing_inputs <- paths[!file.exists(paths)]
 if (length(missing_inputs) > 0) stop("Missing input files: ", paste(missing_inputs, collapse = ", "), call. = FALSE)
 
@@ -21,12 +22,14 @@ meta_sample <- read_xlsx(paths["metadata"], sheet = "sample") %>%
     filter(Sample %in% c("M", "Y", "P", "X", "F", "N"))
 
 lod_status <- fread(paths["detection"]) %>% mutate(Is_Detected = M | Y | P | X | F)
-feature_metadata <- fread(paths["feature_metadata"]) %>% filter(!Is_Protein_Group, !Is_Unknown)
-valid_features <- unique(feature_metadata$UniqueID)
+feature_metadata <- analysis_feature_metadata(fread(paths["feature_metadata"]))
 
-long_df <- fread(paths["profiles"])
+long_df <- aggregate_som_profiles(fread(paths["profiles"]))
+long_df <- filter_batch_analysis_features(long_df, feature_metadata, strict_platforms = character())
+lod_status <- lod_status %>% semi_join(distinct(long_df, Platform, Batch, UniqueID), by = c("Platform", "Batch", "UniqueID"))
+stopifnot(nrow(anti_join(distinct(long_df, Platform, Batch, UniqueID), lod_status, by = c("Platform", "Batch", "UniqueID"))) == 0)
 long_df_filter <- long_df %>%
-    filter(UniqueID %in% valid_features, Sample %in% c("M", "Y", "P", "X", "F", "N"),
+    filter(Sample %in% c("M", "Y", "P", "X", "F", "N"),
            DataTier %in% c("Baseline", "Calibrated", "Reshaped"))
 
 target_samples <- c("M", "F", "P", "X", "Y")
@@ -190,10 +193,10 @@ p_u <- ggplot(titration_by_effect, aes(x = MF_bin, y = Titration_fidelity, color
     scale_y_continuous(limits = c(-5, 118), breaks = seq(0, 100, 25), expand = c(0, 0)) +
     scale_color_manual(values = platform_color, limits = platform_levels, name = "Platform") +
     scale_fill_manual(values = platform_color, limits = platform_levels, guide = "none") +
-    scale_size_continuous(range = c(1.5, 6), breaks = c(10, 50, 100, 1000), name = "Features per bin") +
-    scale_linetype_manual(values = c("All" = "dotted", "Detected" = "solid"), name = "Feature scope") +
+    scale_size_continuous(range = c(1.5, 6), breaks = c(10, 50, 100, 1000), name = "Analytes per bin") +
+    scale_linetype_manual(values = c("All" = "dotted", "Detected" = "solid"), name = "Analyte scope") +
     scale_alpha_manual(values = c("All" = 0.65, "Detected" = 1), guide = "none") +
-    labs(x = expression(log[2]*"(M/F)"), y = "Expected-response features (%)") +
+    labs(x = expression(log[2]*"(M/F)"), y = "Expected-response analytes (%)") +
     plasmix_theme +
     theme(panel.grid.major.x = element_blank(), legend.position = "bottom",
           legend.box.margin = margin(-8, 0, 0, 0), panel.spacing.x = unit(0.25, "lines")) +
@@ -223,6 +226,7 @@ cumulative_fidelity <- cumulative_batch %>%
               Q1 = quantile(Cumulative_fidelity, 0.25, na.rm = TRUE),
               Q3 = quantile(Cumulative_fidelity, 0.75, na.rm = TRUE),
               Batches = n_distinct(Batch), .groups = "drop")
+topk_breaks <- 10^(0:floor(log10(max(cumulative_fidelity$Rank, na.rm = TRUE))))
 
 p_topk <- ggplot(cumulative_fidelity,
                  aes(x = Rank, y = Mean, color = Platform, linetype = TargetSpace,
@@ -233,14 +237,14 @@ p_topk <- ggplot(cumulative_fidelity,
     geom_line(linewidth = 0.55) +
     scale_color_manual(values = platform_color, limits = platform_levels, name = "Platform") +
     scale_fill_manual(values = platform_color, limits = platform_levels) +
-    scale_linetype_manual(values = c("All" = "dotted", "Detected" = "solid"), name = "Features") +
+    scale_linetype_manual(values = c("All" = "dotted", "Detected" = "solid"), name = "Analytes") +
     scale_alpha_manual(values = c("All" = 0.65, "Detected" = 1), guide = "none") +
     plasmix_theme +
-    scale_x_log10(limits = c(1, NA), breaks = c(1, 10, 100, 1000, 10000), labels = scales::comma, expand = c(0,0)) +
+    scale_x_log10(limits = c(1, NA), breaks = topk_breaks, labels = scales::comma, expand = c(0,0)) +
     scale_y_continuous(limits = c(0, 100), breaks = seq(0, 100, 25), expand = c(0,0)) +
-    labs(x = expression(Top~italic(k)~features), y = "Cumulative expected-response rate (%)") +
+    labs(x = expression(Top~italic(k)~analytes), y = "Cumulative expected-response rate (%)") +
     theme(panel.grid.major.x = element_blank(), legend.position = "bottom",
-          axis.title.y = element_text(hjust = 1.5), axis.text.x = element_text(hjust = c(0.1, 0.8, 0.8, 0.8, 0.8))) +
+          axis.title.y = element_text(hjust = 1.5), axis.text.x = element_text(hjust = c(rep(0.5, length(topk_breaks) - 1L), 0.95))) +
     guides(color = guide_legend(order = 1, override.aes = list(linetype = "solid", alpha = 1, linewidth = 0.7)),
           linetype = guide_legend(order = 3, override.aes = list(color = "black", alpha = 1, linewidth = 0.6)))
 
@@ -613,8 +617,8 @@ st4_base <- st4_keys %>%
 
 feature_counts <- trc_feature_level %>%
     group_by(Platform, Batch, DataTier, ProcessLevel) %>%
-    summarize(`Features (All evaluable)` = format(n_distinct(UniqueID), big.mark = ",", scientific = FALSE, trim = TRUE),
-              `Features (Detected)` = format(n_distinct(UniqueID[Is_Detected %in% TRUE]), big.mark = ",", scientific = FALSE, trim = TRUE), .groups = "drop")
+    summarize(`Analytes (All evaluable)` = format(n_distinct(UniqueID), big.mark = ",", scientific = FALSE, trim = TRUE),
+              `Analytes (Detected)` = format(n_distinct(UniqueID[Is_Detected %in% TRUE]), big.mark = ",", scientific = FALSE, trim = TRUE), .groups = "drop")
 
 snr_wide <- snr_all_tiers %>%
     mutate(SNR_stat = fmt_snr(SNR_mean, SNR_SD),
@@ -688,7 +692,7 @@ st4 <- st4_base %>%
            DataTier = factor(DataTier, levels = c("Baseline", "Calibrated", "Reshaped"))) %>%
     arrange(Platform, Batch, DataTier, `Quantification output`) %>%
     select(Batch, `Data tier`, `Quantification output`,
-           `Features (All evaluable)`, `Features (Detected)`,
+           `Analytes (All evaluable)`, `Analytes (Detected)`,
            `PCA-based SNR (All evaluable)`, `PCA-based SNR (Detected)`,
            `Technical CV, % (All evaluable)`, `Technical CV, % (Detected)`,
            `Gradient-fit R² Y (All evaluable)`, `Gradient-fit R² P (All evaluable)`,
@@ -705,39 +709,39 @@ st4_definitions <- tribble(
     "Batch", "Unique batch identifier. The platform is encoded in the batch name.",
     "Data tier", "Data processing tier evaluated: Baseline, Calibrated or Reshaped.",
     "Quantification output", "Platform-specific quantification or processing output.",
-    "Features (All evaluable)", "Number of features included in the feature-level gradient evaluation.",
-    "Features (Detected)", "Number of features meeting the platform-specific detection criterion.",
-    "PCA-based SNR (All evaluable)", "PCA-based signal-to-noise ratio across all evaluable features, shown as mean ± SD across three-replicate combinations.",
-    "PCA-based SNR (Detected)", "PCA-based signal-to-noise ratio across detected features, shown as mean ± SD across three-replicate combinations.",
-    "Technical CV, % (All evaluable)", "Feature-level technical replicate coefficient of variation across all evaluable features, shown as median [Q1–Q3] in percent.",
-    "Technical CV, % (Detected)", "Feature-level technical replicate coefficient of variation across detected features, shown as median [Q1–Q3] in percent.",
-    "Gradient-fit R² Y (All evaluable)", "Cross-feature coefficient of determination for recovery of the expected Y-mixture response among all evaluable features.",
-    "Gradient-fit R² P (All evaluable)", "Cross-feature coefficient of determination for recovery of the expected P-mixture response among all evaluable features.",
-    "Gradient-fit R² X (All evaluable)", "Cross-feature coefficient of determination for recovery of the expected X-mixture response among all evaluable features.",
-    "Gradient-fit R² Y (Detected)", "Cross-feature coefficient of determination for recovery of the expected Y-mixture response among detected features.",
-    "Gradient-fit R² P (Detected)", "Cross-feature coefficient of determination for recovery of the expected P-mixture response among detected features.",
-    "Gradient-fit R² X (Detected)", "Cross-feature coefficient of determination for recovery of the expected X-mixture response among detected features.",
-    "Titration monotonicity (All evaluable)", "Percentage and fraction of all evaluable features for which every evaluable adjacent titration relation received greater than 50% support across three-replicate combinations.",
-    "Titration monotonicity (Detected)", "Percentage and fraction of detected features for which every evaluable adjacent titration relation received greater than 50% support across three-replicate combinations.",
-    "Mean absolute TRC deviation (All evaluable)", "Feature-level mean absolute deviation from the nominal Y, P and X TRCs, shown as median [Q1–Q3] among all evaluable features.",
-    "Mean absolute TRC deviation (Detected)", "Feature-level mean absolute deviation from the nominal Y, P and X TRCs, shown as median [Q1–Q3] among detected features.",
-    "Expected response (All evaluable)", "Percentage and fraction of all evaluable features satisfying titration monotonicity and having a mean absolute TRC deviation <0.25 across at least two intermediate gradients.",
-    "Expected response (Detected)", "Percentage and fraction of detected features satisfying titration monotonicity and having a mean absolute TRC deviation <0.25 across at least two intermediate gradients.",
-    "Expected response (LoD-excluded)", "Percentage and fraction of non-detected evaluable features satisfying titration monotonicity and having a mean absolute TRC deviation <0.25 across at least two intermediate gradients."
+    "Analytes (All evaluable)", "Number of analytes included in the gradient evaluation.",
+    "Analytes (Detected)", "Number of analytes meeting the platform-specific detection criterion.",
+    "PCA-based SNR (All evaluable)", "PCA-based signal-to-noise ratio across all evaluable analytes, shown as mean ± SD across three-replicate combinations.",
+    "PCA-based SNR (Detected)", "PCA-based signal-to-noise ratio across detected analytes, shown as mean ± SD across three-replicate combinations.",
+    "Technical CV, % (All evaluable)", "Analyte-level technical replicate coefficient of variation across all evaluable analytes, shown as median [Q1–Q3] in percent.",
+    "Technical CV, % (Detected)", "Analyte-level technical replicate coefficient of variation across detected analytes, shown as median [Q1–Q3] in percent.",
+    "Gradient-fit R² Y (All evaluable)", "Cross-analyte coefficient of determination for recovery of the expected Y-mixture response among all evaluable analytes.",
+    "Gradient-fit R² P (All evaluable)", "Cross-analyte coefficient of determination for recovery of the expected P-mixture response among all evaluable analytes.",
+    "Gradient-fit R² X (All evaluable)", "Cross-analyte coefficient of determination for recovery of the expected X-mixture response among all evaluable analytes.",
+    "Gradient-fit R² Y (Detected)", "Cross-analyte coefficient of determination for recovery of the expected Y-mixture response among detected analytes.",
+    "Gradient-fit R² P (Detected)", "Cross-analyte coefficient of determination for recovery of the expected P-mixture response among detected analytes.",
+    "Gradient-fit R² X (Detected)", "Cross-analyte coefficient of determination for recovery of the expected X-mixture response among detected analytes.",
+    "Titration monotonicity (All evaluable)", "Percentage and fraction of all evaluable analytes for which every evaluable adjacent titration relation received greater than 50% support across three-replicate combinations.",
+    "Titration monotonicity (Detected)", "Percentage and fraction of detected analytes for which every evaluable adjacent titration relation received greater than 50% support across three-replicate combinations.",
+    "Mean absolute TRC deviation (All evaluable)", "Analyte-level mean absolute deviation from the nominal Y, P and X TRCs, shown as median [Q1–Q3] among all evaluable analytes.",
+    "Mean absolute TRC deviation (Detected)", "Analyte-level mean absolute deviation from the nominal Y, P and X TRCs, shown as median [Q1–Q3] among detected analytes.",
+    "Expected response (All evaluable)", "Percentage and fraction of all evaluable analytes satisfying titration monotonicity and having a mean absolute TRC deviation <0.25 across at least two intermediate gradients.",
+    "Expected response (Detected)", "Percentage and fraction of detected analytes satisfying titration monotonicity and having a mean absolute TRC deviation <0.25 across at least two intermediate gradients.",
+    "Expected response (LoD-excluded)", "Percentage and fraction of non-detected evaluable analytes satisfying titration monotonicity and having a mean absolute TRC deviation <0.25 across at least two intermediate gradients."
 )
 
 # 11. Source data ----
 fig2a_source <- titration_by_effect %>%
-    mutate(`Feature set` = recode(as.character(TargetSpace), All = "All evaluable", Detected = "Detected")) %>%
-    transmute(Platform = as.character(Platform), `Feature set`, `log2(M/F) bin` = MF_bin,
-              `Features per bin` = Features, `Expected response (%)` = Titration_fidelity)
+    mutate(`Analyte set` = recode(as.character(TargetSpace), All = "All evaluable", Detected = "Detected")) %>%
+    transmute(Platform = as.character(Platform), `Analyte set`, `log2(M/F) bin` = MF_bin,
+              `Analytes per bin` = Features, `Expected response (%)` = Titration_fidelity)
 
 fig2a_counts_source <- platform_pass_n %>%
-    transmute(Platform = as.character(Platform), `Expected-response features, n` = N_pass)
+    transmute(Platform = as.character(Platform), `Expected-response analytes, n` = N_pass)
 
 fig2b_source <- cumulative_fidelity %>%
-    mutate(`Feature set` = recode(as.character(TargetSpace), All = "All evaluable", Detected = "Detected")) %>%
-    transmute(Platform = as.character(Platform), `Feature set`, `Feature rank` = Rank,
+    mutate(`Analyte set` = recode(as.character(TargetSpace), All = "All evaluable", Detected = "Detected")) %>%
+    transmute(Platform = as.character(Platform), `Analyte set`, `Analyte rank` = Rank,
               `Mean expected-response (%)` = Mean, `Q1 (%)` = Q1, `Q3 (%)` = Q3, Batches)
 
 fig2c_source <- snr_main %>%
@@ -745,7 +749,7 @@ fig2c_source <- snr_main %>%
            `Quantification output` = format_quantification_output(Platform, as.character(Batch), as.character(DataTier), ProcessLevel)) %>%
     transmute(Platform, Batch = as.character(Batch), `Data tier`, `Quantification output`,
               `PCA-based SNR` = SNR_mean, `SNR SD` = SNR_SD,
-              `Features retained` = Assays, Iterations)
+              `Analytes retained` = Assays, Iterations)
 
 fig2d_source <- cv_main %>%
     mutate(`Data tier` = as.character(DataTier),
@@ -766,11 +770,11 @@ fig2e_source <- global_plot_data %>%
 
 fig2f_source <- yield_primary %>%
     transmute(Platform, Batch = as.character(Batch), Detected,
-              `Expected-response detected features` = Valid_detected,
-              `Expected-response LoD-excluded features` = Valid_lod_excluded,
-              Denominator, `Expected-response features, total` = Valid_total,
-              `Expected-response detected features (%)` = Detected_valid_pct,
-              `Expected-response LoD-excluded features (%)` = Lod_excluded_valid_pct,
+              `Expected-response detected analytes` = Valid_detected,
+              `Expected-response LoD-excluded analytes` = Valid_lod_excluded,
+              Denominator, `Expected-response analytes, total` = Valid_total,
+              `Expected-response detected analytes (%)` = Detected_valid_pct,
+              `Expected-response LoD-excluded analytes (%)` = Lod_excluded_valid_pct,
               `Detection-adjusted recovery yield (%)` = Fidelity)
 
 fig2f_segments_source <- yield_segments %>%
@@ -779,9 +783,9 @@ fig2f_segments_source <- yield_segments %>%
 
 fig2f_reshaped_source <- yield_reshaped %>%
     transmute(Platform, Batch = as.character(Batch), Detected,
-              `Expected-response detected features` = Valid_detected,
-              `Expected-response LoD-excluded features` = Valid_lod_excluded,
-              Denominator, `Expected-response features, total` = Valid_total,
+              `Expected-response detected analytes` = Valid_detected,
+              `Expected-response LoD-excluded analytes` = Valid_lod_excluded,
+              Denominator, `Expected-response analytes, total` = Valid_total,
               `Detection-adjusted recovery yield (%)` = Fidelity,
               `Primary-tier recovery yield (%)` = Primary_fidelity)
 

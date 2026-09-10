@@ -1,13 +1,14 @@
-# Extended Data Figure 7 | Normalization scale factors and stage-specific detection
+# Extended Data Figure 2 | Normalization scale factors and stage-specific detection
 
 # 0. Setup ----
 source("scripts/_project_setup.R")
 use_packages(c("data.table", "tidyverse", "readxl", "patchwork", "ggpubr", "openxlsx", "showtext"), "SomaDataIO")
 source("utils/figure_style.R")
+source("utils/feature_mapping.R")
 plasmix_theme <- if (is.function(theme_plasmix)) theme_plasmix() else theme_plasmix
 showtext_auto(); showtext_opts(dpi = 600)
 label_style <- list(size = 12, face = "bold")
-paths <- c(metadata = "data/study_metadata.xlsx", profiles = "data/protein_profiles_long.tsv.gz",
+paths <- c(metadata = "data/study_metadata.xlsx", feature_metadata = "data/feature_metadata.tsv.gz", profiles = "data/protein_profiles_long.tsv.gz",
            detection = "results/detection_status.tsv.gz")
 adat_paths <- c(
     SOM_P1_B1 = upstream_path("raw", "SOM_ACM_241017", "normalized-adat",
@@ -16,15 +17,16 @@ adat_paths <- c(
     SOM_P2_B1 = upstream_path("raw", "SOM_ISG_250919", "Fudan_18Sep2025_Fudan_19Sep2025_Step7_FinalNormStep_MedNormExt-R.adat"),
     SOM_P2_B2 = upstream_path("raw", "SOM_ISH_260331", "NovaSeqX-Fudan260331_dragen-protein-quant_Step3_SampleNorm.adat")
 )
-upstream_metadata <- upstream_path("metadata", "metadata_v3.0.xlsx")
+upstream_metadata <- upstream_path("metadata", "metadata_v3.0-ms_master.xlsx")
 missing_inputs <- c(paths[!file.exists(paths)], adat_paths[!file.exists(adat_paths)], upstream_metadata[!file.exists(upstream_metadata)])
-if (length(missing_inputs)) stop("Extended Data Figure 7 is missing input files:\n", paste(missing_inputs, collapse = "\n"))
+if (length(missing_inputs)) stop("Extended Data Figure 2 is missing input files:\n", paste(missing_inputs, collapse = "\n"))
 
 # 1. Inputs and SomaScan scale factors ----
 meta_batch <- read_xlsx(paths["metadata"], sheet = "batch")
 meta_sample <- read_xlsx(paths["metadata"], sheet = "sample")
 raw_meta_sample <- read_xlsx(upstream_metadata, sheet = "sample")
-long_df <- fread(paths["profiles"]) %>% as_tibble()
+feature_metadata <- fread(paths["feature_metadata"]) %>% as_tibble()
+long_df <- fread(paths["profiles"]) %>% as_tibble() %>% filter_batch_analysis_features(feature_metadata, strict_platforms = character())
 
 extract_scale_factors <- function(file_path, batch_name) {
     adat <- suppressWarnings(SomaDataIO::read_adat(file_path))
@@ -65,7 +67,7 @@ p_left <- ggplot(som_sf_hyb %>% filter(Batch %in% c("SOM_P1_B1", "SOM_P1_B2")), 
     scale_fill_manual(values = sample_color) +
     labs(y = "Readout scale factor", x = NULL) +
     plasmix_theme +
-    theme(legend.position = "none", panel.grid.major = element_blank(), axis.text.x = element_text(size = 7))
+    theme(legend.position = "none", panel.grid.major = element_blank(), axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5))
 
 p_right <- ggplot(som_sf_hyb %>% filter(Batch %in% c("SOM_P2_B1", "SOM_P2_B2")), aes(Sample, HybNorm_SF, fill = Sample)) +
     geom_boxplot(outlier.shape = NA, alpha = 1, width = 0.6, color = "black", linewidth = 0.2) +
@@ -74,9 +76,9 @@ p_right <- ggplot(som_sf_hyb %>% filter(Batch %in% c("SOM_P2_B1", "SOM_P2_B2")),
     scale_fill_manual(values = sample_color) +
     labs(y = NULL, x = NULL) +
     plasmix_theme +
-    theme(legend.position = "none", panel.grid.major = element_blank(), axis.text.x = element_text(size = 7))
+    theme(legend.position = "none", panel.grid.major = element_blank(), axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5))
 
-p_scale_factors <- p_left + p_right + plot_layout(widths = c(2, 1)) & theme(plot.margin = margin(2.5, 3, 2.5, 3))
+p_scale_factors <- p_left + p_right + plot_layout(widths = c(1, 1)) & theme(plot.margin = margin(2.5, 3, 2.5, 3))
 
 # 3. Stage-specific feature detection ----
 affinity_batches <- c("OLK_P2_B1", "OLK_P2_B2", "SOM_P1_B1", "SOM_P1_B2", "SOM_P2_B1", "SOM_P2_B2")
@@ -128,6 +130,7 @@ readout_thresholds <- df_readout %>% filter(Sample == "BLK") %>%
 status_raw <- calculate_strict_detection_status(df_raw, raw_thresholds, meta_sample_af, "Raw readout")
 status_readout <- calculate_strict_detection_status(df_readout, readout_thresholds, meta_sample_af, "Readout norm")
 status_plate <- fread(paths["detection"]) %>% as_tibble() %>%
+    semi_join(distinct(long_df, Platform, Batch, UniqueID), by = c("Platform", "Batch", "UniqueID")) %>%
     filter(Batch %in% affinity_batches) %>%
     mutate(Stage = "Plate norm") %>%
     select(any_of(c("Batch", "Platform", "UniqueID", "M", "Y", "P", "X", "F", "N", "PassedGroup", "JumpNote", "IsAboveLoD", "Stage")))
@@ -152,17 +155,17 @@ p_detection <- ggplot(detection_summary, aes(Batch, `Detection rate (%)`, fill =
           legend.text = element_text(size = 7.5, vjust = 0.5, margin = margin(0, 0, 0, 3)))
 
 # 4. Assemble and export ----
-figure_ed7 <- ggarrange(p_scale_factors, p_detection, nrow = 1, widths = c(1.5, 1), labels = c("a", "b"),
+figure_ed2 <- ggarrange(p_scale_factors, p_detection, nrow = 1, widths = c(1.5, 1), labels = c("a", "b"),
                                 label.x = 0, label.y = 1, hjust = -0.2, vjust = 1.2, font.label = label_style)
-ggsave("figures/ed7_normalization_detection.pdf", figure_ed7, width = 10, height = 2.8)
-ggsave("figures/ed7_normalization_detection.png", figure_ed7, width = 10, height = 2.8, dpi = 600, bg = "white")
+ggsave("figures/ed2_normalization_detection.pdf", figure_ed2, width = 10, height = 2.8)
+ggsave("figures/ed2_normalization_detection.png", figure_ed2, width = 10, height = 2.8, dpi = 600, bg = "white")
 
 source_data <- list(
-    ED7a_scale_factors = som_sf_hyb %>% arrange(Batch, Sample, ColName),
-    ED7b_detection_summary = detection_summary %>% mutate(Stage = as.character(Stage)) %>% arrange(Platform, Batch, Stage),
-    ED7b_feature_status = feature_detection_status %>% arrange(Platform, Batch, Stage, UniqueID),
-    ED7b_raw_thresholds = raw_thresholds %>% arrange(Platform, Batch, UniqueID),
-    ED7b_readout_thresholds = readout_thresholds %>% arrange(Platform, Batch, UniqueID)
+    ED2a_scale_factors = som_sf_hyb %>% arrange(Batch, Sample, ColName),
+    ED2b_detection_summary = detection_summary %>% mutate(Stage = as.character(Stage)) %>% arrange(Platform, Batch, Stage),
+    ED2b_feature_status = feature_detection_status %>% arrange(Platform, Batch, Stage, UniqueID),
+    ED2b_raw_thresholds = raw_thresholds %>% arrange(Platform, Batch, UniqueID),
+    ED2b_readout_thresholds = readout_thresholds %>% arrange(Platform, Batch, UniqueID)
 )
-write.xlsx(source_data, "tables/SourceData_EDFigure7.xlsx", overwrite = TRUE, keepNA = TRUE, na.string = "NA")
-message("Extended Data Figure 7 and its source data were exported.")
+write.xlsx(source_data, "tables/SourceData_EDFigure2.xlsx", overwrite = TRUE, keepNA = TRUE, na.string = "NA")
+message("Extended Data Figure 2 and its source data were exported.")

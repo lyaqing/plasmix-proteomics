@@ -2,10 +2,11 @@
 
 # 0. Setup ----
 source("scripts/_project_setup.R")
-use_packages(c("data.table", "tidyverse", "readxl", "pbapply", "patchwork", "openxlsx", "showtext"))
+use_packages(c("data.table", "tidyverse", "readxl", "pbapply", "patchwork", "openxlsx", "showtext", "effsize"))
 source("utils/figure_style.R")
 source("utils/batch_correction.R")
 source("utils/benchmark_metrics.R")
+source("utils/feature_mapping.R")
 plasmix_theme <- if (is.function(theme_plasmix)) theme_plasmix() else theme_plasmix
 showtext_auto(); showtext_opts(dpi = 600)
 set.seed(2026)
@@ -31,17 +32,12 @@ selected_batches <- c(
 
 meta_batch <- read_xlsx(paths["metadata"], sheet = "batch") %>% as_tibble()
 meta_sample <- read_xlsx(paths["metadata"], sheet = "sample") %>% as_tibble()
-feature_meta <- fread(paths["feature_metadata"]) %>% as_tibble()
-long_df <- fread(paths["profiles"]) %>% as_tibble()
+feature_meta <- analysis_feature_metadata(fread(paths["feature_metadata"]))
+long_df <- aggregate_som_profiles(fread(paths["profiles"])) %>% filter_batch_analysis_features(feature_meta)
 mapd_df <- fread(paths["mapd"]) %>% as_tibble()
 physchem_matrix <- fread(paths["physchem"]) %>% as_tibble()
 physchem_dict <- fread(paths["physchem_dictionary"]) %>% as_tibble()
 cat_colors <- c("Structure" = "#E64B35", "Surface" = "#4DBBD5", "Charge" = "#00A087", "Disorder" = "#F39B7F", "Secretory" = "#8491B4", "Abundance" = "#91D1C2")
-
-valid_features <- feature_meta %>%
-    filter(!Is_Protein_Group, !Is_Unknown) %>%
-    pull(UniqueID) %>%
-    unique()
 
 meta_batch_ht <- meta_batch %>%
     filter(Batch %in% selected_batches, Platform %in% c("DIA", "OLK", "SOM")) %>%
@@ -51,7 +47,7 @@ meta_sample_ht <- meta_sample %>%
     filter(Batch %in% selected_batches)
 
 long_df <- long_df %>%
-    filter(Batch %in% selected_batches, UniqueID %in% valid_features)
+    filter(Batch %in% selected_batches)
 
 if (!"Platform" %in% colnames(long_df)) {
     long_df <- long_df %>% left_join(meta_batch_ht %>% select(Batch, Platform), by = "Batch")
@@ -776,7 +772,7 @@ p_b <- ggplot() +
     scale_y_continuous(limits = c(0, 0.8), breaks = seq(0, 0.8, 0.2), labels = c("0", "20", "40", "60", "80"), expand = c(0, 0)) +
     scale_color_manual(values = custom_strategy_colors) +
     scale_shape_manual(values = custom_base_shapes) +
-    labs(x = NULL, y = "Harmonized-feature rate (%)") + plasmix_theme +
+    labs(x = NULL, y = "Harmonized proteins (%)") + plasmix_theme +
     theme(
         panel.grid.major.x = element_blank(),
         legend.position = "right", legend.box = "vertical", legend.box.just = "left",
@@ -791,8 +787,7 @@ p_b <- ggplot() +
         shape = guide_legend(ncol = 1, order = 2, byrow = TRUE, override.aes = list(size = 1.5, alpha = 1, color = "black"))
     )
 
-# Panel c: exclusive integration outcomes across six settings and three designs ----
-# Shared success should be at the bottom, Unresolved at the top, and labels must match stack order.
+# Panel c: incremental integration outcomes across six settings and three designs ----
 strategy_success_feature_all <- method_feature_results %>%
     mutate(
         StrategyCollapsed = case_when(
@@ -810,23 +805,40 @@ strategy_success_feature_all <- method_feature_results %>%
     mutate(StrategyCollapsed = factor(StrategyCollapsed, levels = c("Native", "RF-BECA", "RI-BECA", "SRR", "SRR+RF-BECA"))) %>%
     pivot_wider(names_from = StrategyCollapsed, values_from = StrategySuccess, values_fill = FALSE, names_expand = TRUE)
 
-stack_levels <- c("Shared success", "Native", "SRR", "SRR+RF-BECA", "RF-BECA", "RI-BECA", "Unresolved")
+stack_levels <- c("Native success", "Shared success", "Reference-free only", "Reference-based only", "Unresolved")
 
 exclusive_stats_raw <- strategy_success_feature_all %>%
     mutate(
+        ReferenceEnabled = `RI-BECA` | SRR | `SRR+RF-BECA`,
         Category = case_when(
-            (SRR | `SRR+RF-BECA`) & (Native | `RF-BECA` | `RI-BECA`) ~ "Shared success",
-            SRR ~ "SRR",
-            `SRR+RF-BECA` ~ "SRR+RF-BECA",
-            `RF-BECA` ~ "RF-BECA",
-            `RI-BECA` ~ "RI-BECA",
-            Native ~ "Native",
+            Native ~ "Native success",
+            `RF-BECA` & ReferenceEnabled ~ "Shared success",
+            `RF-BECA` ~ "Reference-free only",
+            ReferenceEnabled ~ "Reference-based only",
             TRUE ~ "Unresolved"
         ),
         Category = factor(Category, levels = stack_levels),
         Detailed_Type = factor(Detailed_Type, levels = detailed_type_levels),
         Design = factor(Design, levels = design_levels)
     )
+
+# Reference-assisted success relative to the union of reference-free BECA methods.
+reference_vs_rf_feature <- method_feature_results %>%
+    group_by(Detailed_Type, Macro_Type, Batch1, Batch2, Design, UniqueID) %>%
+    summarize(
+        RF_Success = any(Strategy == "RF-BECA" & coalesce(OverallSuccess, FALSE)),
+        P_Success = any(MethodReference == "P" & coalesce(OverallSuccess, FALSE), na.rm = TRUE),
+        N_Success = any(MethodReference == "N" & coalesce(OverallSuccess, FALSE), na.rm = TRUE),
+        .groups = "drop"
+    ) %>%
+    mutate(P_Rescue = !RF_Success & P_Success, N_Rescue = !RF_Success & N_Success,
+           Either_Reference_Rescue = !RF_Success & (P_Success | N_Success))
+
+reference_vs_rf_pair <- reference_vs_rf_feature %>%
+    group_by(Detailed_Type, Macro_Type, Batch1, Batch2, Design) %>%
+    summarize(N_Proteins = n(), RF_Rate = mean(RF_Success), P_Rate = mean(P_Success), N_Rate = mean(N_Success),
+              P_Rescue_Rate = mean(P_Rescue), N_Rescue_Rate = mean(N_Rescue),
+              Either_Reference_Rescue_Rate = mean(Either_Reference_Rescue), .groups = "drop")
 
 plot_data_final <- exclusive_stats_raw %>%
     count(Detailed_Type, Design, Batch1, Batch2, Category, name = "Count") %>%
@@ -843,26 +855,24 @@ label_data <- plot_data_final %>%
     arrange(Category, .by_group = TRUE) %>%
     mutate(ymin = lag(cumsum(Mean_Prop), default = 0), ymax = cumsum(Mean_Prop), ymid = (ymin + ymax) / 2) %>%
     ungroup() %>%
-    filter(Category %in% c("Shared success", "SRR+RF-BECA", "Unresolved")) %>%
     mutate(
         Label = if_else(Mean_Prop >= 0.04, scales::percent(Mean_Prop, accuracy = 0.1), ""),
         TextColor = case_when(
-            Category %in% c("Shared success", "SRR+RF-BECA") ~ "white",
-            Category == "Unresolved" ~ "black",
+            Category %in% c("Shared success", "Reference-free only", "Reference-based only") ~ "white",
             TRUE ~ "black"
         )
     )
 
-category_colors <- c("Shared success" = "#2F5597", "Native" = "#D4C8B8FF", "SRR" = "#d6b8e6", "SRR+RF-BECA" = "#6D2F7F", "RF-BECA" = "#7E6148FF", "RI-BECA" = "#D9A05B", "Unresolved" = "#d4d4d4")
+category_colors <- c("Native success" = "#D4C8B8FF", "Shared success" = "#2F5597", "Reference-free only" = "#7E6148FF", "Reference-based only" = "#CF4E9C", "Unresolved" = "#d4d4d4")
 p_c <- ggplot(plot_data_final, aes(x = Design, y = Mean_Prop, fill = Category)) +
     geom_col(width = 0.75, color = "white", linewidth = 0.25, position = position_stack(reverse = TRUE)) +
     geom_text(data = label_data, aes(x = Design, y = ymid, label = Label, color = TextColor), inherit.aes = FALSE, size = 2.5, fontface = "bold", show.legend = FALSE) +
     facet_wrap(~Detailed_Type, nrow = 1) +
     scale_x_discrete(labels = c("Balanced" = "Bal.", "Partial" = "Part.", "Confounded" = "Conf.")) +
-    scale_fill_manual(values = category_colors, breaks = c("Shared success", "Unresolved", "SRR", "SRR+RF-BECA", "RF-BECA", "RI-BECA", "Native")) +
+    scale_fill_manual(values = category_colors, breaks = stack_levels) +
     scale_color_manual(values = c("white" = "white", "black" = "black"), guide = "none") +
     scale_y_continuous(breaks = seq(0, 1, 0.25), labels = c("0", "25", "50", "75", "100"), expand = c(0, 0)) +
-    labs(x = NULL, y = "Proportion of proteins (%)", fill = "Integration\noutcome") +
+    labs(x = NULL, y = "Proportion of proteins (%)", fill = "Integration outcome") +
     plasmix_theme +
     theme(
         panel.grid.major.x = element_blank(),
@@ -941,10 +951,10 @@ active_dt <- levels(droplevels(consensus_voting$Detailed_Type))
 shade_and_text_data <- data.frame(Detailed_Type = factor(active_dt, levels = active_dt), Shade_Xmin = 0, Shade_Xmax = 0.25)
 
 srr_status <- method_feature_results %>%
-    filter(Design == "Balanced", Method == "SRR (P)") %>%
+    filter(Design == "Balanced", Method %in% c("SRR (P)", "SRR (N)")) %>%
     group_by(Detailed_Type, UniqueID) %>%
-    summarize(SRR_Rate = mean(coalesce(OverallSuccess, FALSE)), .groups = "drop") %>%
-    mutate(SRR_Call = if_else(SRR_Rate > 0, "Pass", "Fail"), Detailed_Type = factor(Detailed_Type, levels = active_dt))
+    summarize(SRR_Call = if_else(any(coalesce(OverallSuccess, FALSE)), "Yes", "No"), .groups = "drop") %>%
+    mutate(Detailed_Type = factor(Detailed_Type, levels = active_dt))
 
 plot_combined_data <- consensus_voting %>%
     inner_join(srr_status, by = c("Detailed_Type", "UniqueID")) %>%
@@ -973,8 +983,8 @@ p_cdf <- ggplot() +
     facet_wrap(Detailed_Type ~ ., nrow = 2) +
     scale_x_continuous(breaks = seq(0, 1, 0.25), labels = c("0", "25", "50", "75", "100"), expand = c(0, 0)) +
     scale_y_continuous(breaks = seq(0, 1, 0.20), labels = c("0", "20", "40", "60", "80", "100"), expand = c(0, 0)) +
-    scale_color_manual(values = c("Pass" = "#3171b8", "Fail" = "#DF6B6A")) +
-    labs(x = "Ranked proteins (%)", y = "Consensus success rate (%)", color = "SRR diagnosis") + plasmix_theme +
+    scale_color_manual(values = c("Yes" = "#3171b8", "No" = "#DF6B6A")) +
+    labs(x = "Ranked proteins (%)", y = "Consensus success rate (%)", color = "SRR success") + plasmix_theme +
     theme(
         panel.grid.major = element_blank(), axis.text.x = element_text(angle = 90, hjust = 1, vjust = c(0.9, 0.5, 0.5, 0.5, 0.1)),
         legend.title = element_text(size = 7.5, face = "bold", vjust = 0.5), legend.text = element_text(size = 7.5, vjust = 0.5, margin = margin(0, 0, 0, 3)),
@@ -983,8 +993,75 @@ p_cdf <- ggplot() +
 print(p_cdf)
 
 # 11. Panel e: physicochemical differences between integration-success and failure groups ----
-# Required existing objects:
-# df_physchem_display, physchem_dict, cat_colors, active_dt, plasmix_theme
+# 11.1 Prepare physicochemical comparison data ----
+final_physchem <- physchem_dict %>% filter(Retained == "Yes") %>% pull(Feature)
+consensus_voting_class <- consensus_voting %>%
+    group_by(Detailed_Type) %>%
+    mutate(
+        Threshold_Q75 = quantile(Success_Rate, 0.75, na.rm = TRUE),
+        Integration_Status = case_when(
+            Success_Rate == 0 ~ "Failed",
+            Success_Rate >= Threshold_Q75 ~ "Success",
+            TRUE ~ "Intermediate"
+        )
+    ) %>%
+    ungroup() %>%
+    filter(Integration_Status %in% c("Success", "Failed"))
+
+results_physchem <- map_dfr(unique(as.character(consensus_voting_class$Detailed_Type)), function(dt) {
+    df_sub <- consensus_voting_class %>%
+        filter(as.character(Detailed_Type) == dt) %>%
+        inner_join(physchem_matrix, by = c("UniProtID" = "Entry"))
+    map_dfr(final_physchem, function(feat) {
+        v_success <- suppressWarnings(as.numeric(df_sub[[feat]][df_sub$Integration_Status == "Success"]))
+        v_failed <- suppressWarnings(as.numeric(df_sub[[feat]][df_sub$Integration_Status == "Failed"]))
+        v_success <- v_success[is.finite(v_success)]
+        v_failed <- v_failed[is.finite(v_failed)]
+        if (length(v_success) < 5 || length(v_failed) < 5) return(NULL)
+        tibble(
+            Detailed_Type = dt,
+            Feature = feat,
+            Cliff_Delta = as.numeric(effsize::cliff.delta(v_success, v_failed)$estimate),
+            P_Value = suppressWarnings(wilcox.test(v_success, v_failed, exact = FALSE)$p.value)
+        )
+    })
+})
+
+df_physchem_summary <- results_physchem %>%
+    left_join(
+        physchem_dict %>%
+            transmute(
+                Feature,
+                Property,
+                Category = as.character(Category)
+            ),
+        by = "Feature"
+    ) %>%
+    mutate(
+        Fill_Status = case_when(
+            P_Value < 0.05 & Cliff_Delta > 0 ~ "Success-enriched",
+            P_Value < 0.05 & Cliff_Delta < 0 ~ "Failure-enriched",
+            TRUE ~ "Non-significant"
+        ),
+        Stars = case_when(
+            P_Value < 0.001 ~ "***",
+            P_Value < 0.01 ~ "**",
+            P_Value < 0.05 ~ "*",
+            TRUE ~ ""
+        )
+    )
+
+sig_features_to_display <- df_physchem_summary %>%
+    group_by(Feature) %>%
+    summarize(
+        Any_Significant = any(P_Value < 0.05, na.rm = TRUE),
+        .groups = "drop"
+    ) %>%
+    filter(Any_Significant) %>%
+    pull(Feature)
+
+df_physchem_display <- df_physchem_summary %>% filter(Feature %in% sig_features_to_display)
+
 legend_category_order <- names(cat_colors)
 
 # Preserve the original property order in physchem_dict
@@ -1045,11 +1122,7 @@ p_cat <- ggplot(df_cat, aes(x = "1", y = Property, fill = Category)) +
     )
 
 # Main Cliff's-delta bar plot
-cliff_colors <- c(
-    "Success-enriched" = "#3171b8",
-    "Failure-enriched" = "#EECEB7",
-    "Non-significant" = "#E0E0E0"
-)
+cliff_colors <- c("Success-enriched" = "#3171b8", "Failure-enriched" = "#EECEB7", "Non-significant" = "#E0E0E0")
 
 df_physchem_display$Fill_Status <- factor(df_physchem_display$Fill_Status, levels = names(cliff_colors))
 
@@ -1126,6 +1199,7 @@ sp_cliff <- p_main + p_cat +
         legend.position = "right",
         legend.box = "vertical",
         legend.justification = "center",
+        legend.text = element_text(margin = margin(0, 0, 0, 2)),
         legend.margin = margin(l = -8, r = 0),
         plot.margin = margin(2, -2, 1.5, 2)
     )
@@ -1134,9 +1208,9 @@ print(sp_cliff)
 
 # 12. Main Figure 6 assembly and export ----
 label_style <- list(size = 12, face = "bold")
-row1 <- ggarrange(p_b, p_c, nrow = 2, heights = c(1, 1), font.label = label_style, labels = c("b", "c"), label.x = 0, label.y = 1, hjust = -0.2, vjust = 1.2)
-row2 <- ggarrange(p_cdf, sp_cliff, nrow = 1, widths = c(1, 2.05), font.label = label_style, labels = c("d", "e"), label.x = 0, label.y = 1, hjust = -0.2, vjust = 1.2)
-merge_fig6 <- ggarrange(row1, row2, ncol = 1, heights = c(1.4, 1))
+row1 <- ggpubr::ggarrange(p_b, p_c, nrow = 2, heights = c(1, 1), font.label = label_style, labels = c("b", "c"), label.x = 0, label.y = 1, hjust = -0.2, vjust = 1.2)
+row2 <- ggpubr::ggarrange(p_cdf, sp_cliff, nrow = 1, widths = c(1, 2.05), font.label = label_style, labels = c("d", "e"), label.x = 0, label.y = 1, hjust = -0.2, vjust = 1.2)
+merge_fig6 <- ggpubr::ggarrange(row1, row2, ncol = 1, heights = c(1.4, 1))
 ggsave("figures/fig6_integration_guidance.pdf", merge_fig6, width = 10, height = 8)
 ggsave("figures/fig6_integration_guidance.png", merge_fig6, width = 10, height = 8, dpi = 600, bg = "white")
 
@@ -1149,6 +1223,8 @@ fig6_ed_inputs <- list(
     method_pair_summary = method_pair_summary,
     srr_reference_feature_results = method_feature_results %>% filter(Method %in% c("SRR (P)", "SRR (N)")),
     srr_reference_pair_summary = method_pair_summary %>% filter(Method %in% c("SRR (P)", "SRR (N)")),
+    reference_vs_rf_feature = reference_vs_rf_feature,
+    reference_vs_rf_pair = reference_vs_rf_pair,
     consensus_voting = consensus_voting,
     consensus_voting_class = consensus_voting_class,
     physicochemical_results = df_physchem_summary
@@ -1190,7 +1266,7 @@ integration_performance <- method_pair_summary %>%
     arrange(Scenario, Design, Strategy, Method)
 
 # 13.2 Exclusive harmonization outcomes ----
-exclusive_outcome_levels <- c("Shared success", "Native", "SRR", "SRR+RF-BECA", "RF-BECA", "RI-BECA", "Unresolved")
+exclusive_outcome_levels <- c("Native success", "Shared success", "Reference-free only", "Reference-based only", "Unresolved")
 exclusive_outcome_pair <- exclusive_stats_raw %>%
     mutate(Scenario = factor(Detailed_Type, levels = scenario_levels), Design = factor(Design, levels = design_levels_export),
            Category = factor(Category, levels = exclusive_outcome_levels)) %>%
@@ -1209,6 +1285,74 @@ exclusive_outcomes <- exclusive_outcome_sizes %>% left_join(exclusive_outcome_pr
     select(Scenario, Design, Pairs, `Proteins per pair`, all_of(paste0(exclusive_outcome_levels, " (%)"))) %>% arrange(Scenario, Design)
 exclusive_outcome_total <- rowSums(exclusive_outcomes %>% select(all_of(paste0(exclusive_outcome_levels, " (%)"))), na.rm = TRUE)
 if (any(abs(exclusive_outcome_total - 1) > 1e-10)) stop("Exclusive-outcome proportions do not sum to 100%.")
+
+# Non-exclusive attribution within Reference-based-only outcomes. These columns
+# describe overlapping strategy contributions; their union, rather than their sum,
+# corresponds to the mutually exclusive Reference-based only column above.
+reference_contribution_pair <- exclusive_stats_raw %>%
+    mutate(
+        `RI-BECA contribution (%)` = as.character(Category) == "Reference-based only" & coalesce(`RI-BECA`, FALSE),
+        `SRR contribution (%)` = as.character(Category) == "Reference-based only" & coalesce(SRR, FALSE),
+        `SRR+RF-BECA contribution (%)` = as.character(Category) == "Reference-based only" & coalesce(`SRR+RF-BECA`, FALSE)
+    ) %>%
+    group_by(Detailed_Type, Design, Batch1, Batch2) %>%
+    summarize(across(ends_with("contribution (%)"), ~ mean(.x, na.rm = TRUE)), .groups = "drop") %>%
+    group_by(Detailed_Type, Design) %>%
+    summarize(across(ends_with("contribution (%)"), ~ mean(.x, na.rm = TRUE)), .groups = "drop") %>%
+    transmute(Scenario = factor(Detailed_Type, levels = scenario_levels),
+              Design = factor(Design, levels = design_levels_export),
+              across(ends_with("contribution (%)")))
+
+exclusive_outcomes <- exclusive_outcomes %>%
+    left_join(reference_contribution_pair, by = c("Scenario", "Design")) %>%
+    select(Scenario, Design, Pairs, `Proteins per pair`, all_of(paste0(exclusive_outcome_levels, " (%)")),
+           `RI-BECA contribution (%)`, `SRR contribution (%)`, `SRR+RF-BECA contribution (%)`)
+
+reference_rescue <- reference_vs_rf_pair %>%
+    mutate(Scenario = factor(Detailed_Type, levels = scenario_levels), Design = factor(Design, levels = design_levels_export)) %>%
+    group_by(Scenario, Design) %>%
+    summarize(Pairs = n(), Protein_Median = median(N_Proteins), Protein_Min = min(N_Proteins), Protein_Max = max(N_Proteins),
+              `RF-BECA success (%)` = mean(RF_Rate), `P-assisted success (%)` = mean(P_Rate),
+              `N-assisted success (%)` = mean(N_Rate), `P rescue beyond RF-BECA (%)` = mean(P_Rescue_Rate),
+              `N rescue beyond RF-BECA (%)` = mean(N_Rescue_Rate),
+              `Either-reference rescue beyond RF-BECA (%)` = mean(Either_Reference_Rescue_Rate), .groups = "drop") %>%
+    mutate(`Proteins per pair` = fmt_range(Protein_Median, Protein_Min, Protein_Max)) %>%
+    select(Scenario, Design, Pairs, `Proteins per pair`, ends_with("(%)"))
+
+# Protein-level attribution within the mutually exclusive Reference-based-only outcome.
+reference_anchor_feature <- method_feature_results %>%
+    group_by(Detailed_Type, Batch1, Batch2, Design, UniqueID) %>%
+    summarize(
+        P_Success = any(MethodReference == "P" & coalesce(OverallSuccess, FALSE), na.rm = TRUE),
+        N_Success = any(MethodReference == "N" & coalesce(OverallSuccess, FALSE), na.rm = TRUE),
+        .groups = "drop"
+    )
+
+reference_based_breakdown <- exclusive_stats_raw %>%
+    filter(as.character(Category) == "Reference-based only") %>%
+    left_join(reference_anchor_feature, by = c("Detailed_Type", "Batch1", "Batch2", "Design", "UniqueID")) %>%
+    mutate(
+        Successful_Strategies = case_when(
+            `RI-BECA` & SRR & `SRR+RF-BECA` ~ "RI-BECA; SRR; SRR + RF-BECA",
+            `RI-BECA` & SRR ~ "RI-BECA; SRR",
+            `RI-BECA` & `SRR+RF-BECA` ~ "RI-BECA; SRR + RF-BECA",
+            SRR & `SRR+RF-BECA` ~ "SRR; SRR + RF-BECA",
+            `RI-BECA` ~ "RI-BECA",
+            SRR ~ "SRR",
+            `SRR+RF-BECA` ~ "SRR + RF-BECA"
+        )
+    ) %>%
+    transmute(
+        Scenario = factor(Detailed_Type, levels = scenario_levels), Design = factor(Design, levels = design_levels_export),
+        `Batch 1` = Batch1, `Batch 2` = Batch2, `Protein ID` = UniqueID,
+        `RI-BECA success` = if_else(`RI-BECA`, "Yes", "No"),
+        `SRR success` = if_else(SRR, "Yes", "No"),
+        `SRR + RF-BECA success` = if_else(`SRR+RF-BECA`, "Yes", "No"),
+        `P-assisted success` = if_else(P_Success, "Yes", "No"),
+        `N-assisted success` = if_else(N_Success, "Yes", "No"),
+        `Successful strategy classes` = Successful_Strategies
+    ) %>%
+    arrange(Scenario, Design, `Batch 1`, `Batch 2`, `Protein ID`)
 
 # 13.3 Physicochemical associations ----
 physchem_association_counts <- map_dfr(unique(as.character(consensus_voting_class$Detailed_Type)), function(dt) {
@@ -1236,7 +1380,9 @@ physicochemical_associations <- df_physchem_summary %>%
 table_metadata <- tribble(
     ~Table, ~Title, ~Description,
     "Integration performance", "Integration performance.", "Pair-level quantitative agreement, expected-response retention and overall harmonization rates across methods, scenarios and study designs.",
-    "Exclusive outcomes", "Exclusive harmonization outcomes.", "Pair-weighted proportions of proteins assigned to mutually exclusive harmonization outcomes under the overall success criterion.",
+    "Exclusive outcomes", "Integration outcomes and reference-based rescue.", "Pair-weighted proportions of proteins assigned to mutually exclusive integration outcomes, with non-exclusive contributions from reference-based strategy classes.",
+    "Reference rescue", "Reference-assisted rescue beyond RF-BECA.", "Pair-level success and incremental rescue obtained with P- or N-anchored strategies relative to reference-free BECA.",
+    "Reference-based breakdown", "Reference-based-only outcome breakdown.", "Protein- and batch-pair-level strategy indicators for outcomes classified as Reference-based only.",
     "Physicochemical associations", "Physicochemical associations.", "Cliff’s δ effect sizes and two-sided Wilcoxon rank-sum P values comparing physicochemical properties between high-consensus and zero-success proteins."
 )
 
@@ -1261,13 +1407,41 @@ definitions <- bind_rows(
         "Exclusive outcomes", "Design", "Study-sample overlap design: Balanced, Partial or Confounded.",
         "Exclusive outcomes", "Pairs", "Number of evaluable batch pairs.",
         "Exclusive outcomes", "Proteins per pair", "Median number of evaluated proteins across batch pairs, followed by the minimum–maximum range in brackets.",
-        "Exclusive outcomes", "Shared success (%)", "Mean pair-level proportion successful with at least one SRR-enabled strategy and at least one non-SRR strategy.",
-        "Exclusive outcomes", "Native (%)", "Mean pair-level proportion satisfying the overall success criterion only without additional harmonization.",
-        "Exclusive outcomes", "SRR (%)", "Mean pair-level proportion successful with at least one base SRR method, with no non-SRR strategy succeeding.",
-        "Exclusive outcomes", "SRR+RF-BECA (%)", "Mean pair-level proportion unsuccessful with base SRR and non-SRR strategies but successful with at least one SRR+RF-BECA combination.",
-        "Exclusive outcomes", "RF-BECA (%)", "Mean pair-level proportion successful with at least one reference-free batch-effect correction method after preceding categories are excluded.",
-        "Exclusive outcomes", "RI-BECA (%)", "Mean pair-level proportion successful with at least one reference-informed RUVs method after preceding categories are excluded.",
-        "Exclusive outcomes", "Unresolved (%)", "Mean pair-level proportion not satisfying the overall success criterion under any evaluated strategy."
+        "Exclusive outcomes", "Native success (%)", "Mean pair-level proportion successful without additional harmonization.",
+        "Exclusive outcomes", "Shared success (%)", "Mean pair-level proportion successful with both RF-BECA and at least one reference-enabled strategy after Native successes are assigned.",
+        "Exclusive outcomes", "Reference-free only (%)", "Mean pair-level proportion successful with RF-BECA but not with any reference-based strategy after Native successes are assigned.",
+        "Exclusive outcomes", "Reference-based only (%)", "Mean pair-level proportion successful with at least one reference-based strategy but not with RF-BECA after Native successes are assigned.",
+        "Exclusive outcomes", "Unresolved (%)", "Mean pair-level proportion not satisfying the overall success criterion under any evaluated strategy.",
+        "Exclusive outcomes", "RI-BECA contribution (%)", "Mean pair-level proportion assigned to Reference-based only and successful with at least one reference-informed BECA method.",
+        "Exclusive outcomes", "SRR contribution (%)", "Mean pair-level proportion assigned to Reference-based only and successful with at least one uncorrected P- or N-anchored sample-to-reference ratio.",
+        "Exclusive outcomes", "SRR+RF-BECA contribution (%)", "Mean pair-level proportion assigned to Reference-based only and successful with at least one reference-free BECA method after P- or N-anchored SRR transformation."
+    ),
+    tribble(
+        ~Table, ~Column, ~Definition,
+        "Reference rescue", "Scenario", "Within- or cross-platform harmonization scenario.",
+        "Reference rescue", "Design", "Study-sample overlap design: Balanced, Partial or Confounded.",
+        "Reference rescue", "Pairs", "Number of evaluable batch pairs.",
+        "Reference rescue", "Proteins per pair", "Median number of evaluated proteins across batch pairs, followed by the minimum–maximum range in brackets.",
+        "Reference rescue", "RF-BECA success (%)", "Mean pair-level proportion successful with at least one reference-free BECA method.",
+        "Reference rescue", "P-assisted success (%)", "Mean pair-level proportion successful with at least one P-anchored strategy.",
+        "Reference rescue", "N-assisted success (%)", "Mean pair-level proportion successful with at least one N-anchored strategy.",
+        "Reference rescue", "P rescue beyond RF-BECA (%)", "Mean pair-level proportion unsuccessful with all RF-BECA methods but successful with a P-anchored strategy.",
+        "Reference rescue", "N rescue beyond RF-BECA (%)", "Mean pair-level proportion unsuccessful with all RF-BECA methods but successful with an N-anchored strategy.",
+        "Reference rescue", "Either-reference rescue beyond RF-BECA (%)", "Mean pair-level proportion unsuccessful with all RF-BECA methods but successful with at least one P- or N-anchored strategy."
+    ),
+    tribble(
+        ~Table, ~Column, ~Definition,
+        "Reference-based breakdown", "Scenario", "Within- or cross-platform harmonization scenario.",
+        "Reference-based breakdown", "Design", "Study-sample overlap design: Balanced, Partial or Confounded.",
+        "Reference-based breakdown", "Batch 1", "First batch in the evaluated pair.",
+        "Reference-based breakdown", "Batch 2", "Second batch in the evaluated pair.",
+        "Reference-based breakdown", "Protein ID", "Protein-level analysis identifier used for integration.",
+        "Reference-based breakdown", "RI-BECA success", "Whether at least one reference-informed BECA method satisfied the overall success criterion.",
+        "Reference-based breakdown", "SRR success", "Whether an uncorrected P- or N-anchored sample-to-reference ratio satisfied the overall success criterion.",
+        "Reference-based breakdown", "SRR + RF-BECA success", "Whether at least one reference-free BECA method applied after P- or N-anchored SRR transformation satisfied the overall success criterion.",
+        "Reference-based breakdown", "P-assisted success", "Whether at least one P-anchored strategy satisfied the overall success criterion.",
+        "Reference-based breakdown", "N-assisted success", "Whether at least one N-anchored strategy satisfied the overall success criterion.",
+        "Reference-based breakdown", "Successful strategy classes", "Reference-based strategy classes satisfying the overall success criterion for this protein and batch pair."
     ),
     tribble(
         ~Table, ~Column, ~Definition,
@@ -1315,8 +1489,14 @@ write_source_sheet("Integration_performance", table_metadata$Title[1], table_met
                c(14, 12, 22, 24, 10, 42, 9, 22, 18, 18, 16),
                percent_cols = c("Quantitative agreement (%)", "Expected response (%)", "Harmonized (%)"), integer_cols = "Pairs")
 write_source_sheet("Exclusive_outcomes", table_metadata$Title[2], table_metadata$Description[2], exclusive_outcomes,
-               c(14, 12, 9, 22, rep(18, 7)), percent_cols = paste0(exclusive_outcome_levels, " (%)"), integer_cols = "Pairs")
-write_source_sheet("Physicochemical_associations", table_metadata$Title[3], table_metadata$Description[3], physicochemical_associations,
+               c(14, 12, 9, 22, rep(18, 5), 22, 20, 25),
+               percent_cols = c(paste0(exclusive_outcome_levels, " (%)"), "RI-BECA contribution (%)", "SRR contribution (%)", "SRR+RF-BECA contribution (%)"),
+               integer_cols = "Pairs")
+write_source_sheet("Reference_rescue", table_metadata$Title[3], table_metadata$Description[3], reference_rescue,
+               c(14, 12, 9, 22, rep(24, 6)), percent_cols = names(reference_rescue)[str_detect(names(reference_rescue), "\\(%\\)$")], integer_cols = "Pairs")
+write_source_sheet("Reference_based_breakdown", table_metadata$Title[4], table_metadata$Description[4], reference_based_breakdown,
+               c(14, 12, 18, 18, 18, 18, 14, 23, 18, 18, 34))
+write_source_sheet("Physicochemical_associations", table_metadata$Title[5], table_metadata$Description[5], physicochemical_associations,
                c(14, 14, 34, 18, 11, 11, 17, 14, 14, 20, 12), percent_cols = "Success threshold (%)",
                integer_cols = c("Success n", "Failure n"), delta_cols = "Cliff's delta (δ)", pvalue_cols = c("P-value", "FDR"))
 write_source_sheet("Definitions", "Source-data definitions", "Titles, descriptions and column definitions for the Figure 6 source-data sheets.", definitions,
