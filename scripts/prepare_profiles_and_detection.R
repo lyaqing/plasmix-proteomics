@@ -3,8 +3,10 @@
 # 0. Setup ----
 source("scripts/_project_setup.R")
 use_packages(c("data.table", "tidyverse", "readxl", "SomaDataIO", "openxlsx"))
+source("utils/feature_mapping.R")
 set.seed(2026)
 options(stringsAsFactors = FALSE)
+
 # 1. Metadata and reference mapping ----
 raw_ref <- fread(upstream_path("references/uniprotkb_AND_model_organism_9606_2026_04_01.tsv.gz"), data.table = FALSE)
 uniprot_ref <- raw_ref %>%
@@ -21,17 +23,6 @@ meta_variance <- read_xlsx(upstream_path("metadata/metadata_v3.0-ms_master.xlsx"
 long_data_list <- list()
 
 # 2. Shared profile-import helpers ----
-clean_and_sort_str <- function(str_vec) {
-  sapply(str_vec, function(x) {
-    if (is.na(x) || x == "") return(NA)
-    parts <- unlist(strsplit(as.character(x), "[:;_|,]"))
-    parts <- trimws(parts)
-    parts <- parts[parts != ""]
-    if (length(parts) == 0) return(NA)
-    paste(sort(unique(parts)), collapse = "|")
-  })
-}
-
 standardize_long <- function(df, batch_id, proc_level) {
   meta_sub <- meta_sample %>% filter(Batch == batch_id)
   if(!"LOD" %in% colnames(df)) {
@@ -58,7 +49,7 @@ read_soma_steps <- function(base_dir, file_prefix, step_map, batch_id, anno_file
   anno <- anno_df %>%
     mutate(AssayID = paste0("seq.", gsub("-", ".", SeqId))) %>%
     filter(Organism == "Human") %>%
-    mutate(UniProtID = clean_and_sort_str(UniProtID)) %>%
+    mutate(UniProtID = normalize_protein_ids(UniProtID)) %>%
     select(AssayID, TargetName, UniProtID)
   meta_sub <- meta_sample %>% filter(Batch == batch_id) %>% select(Batch, RawName, Sample)
   soma_list <- list()
@@ -148,7 +139,7 @@ process_old_olink <- function(filepath, bat_id) {
         Assay = case_when(Assay == "NTproBNP" & UniProt == "NTproBNP" ~ "NT-proBNP", TRUE ~ Assay),
         UniProt = case_when(Assay == "NTproBNP" & UniProt == "NTproBNP" ~ "NT-proBNP", TRUE ~ UniProt)
     ) %>%
-    mutate(UniProtID = clean_and_sort_str(UniProt), TargetName = clean_and_sort_str(Assay)) %>%
+    mutate(UniProtID = normalize_protein_ids(UniProt), TargetName = normalize_protein_ids(Assay)) %>%
     select(SampleID, OlinkID, TargetName, UniProtID, NPX, LOD) %>%
     rename(RawName = SampleID, AssayID = OlinkID, Value = NPX) %>%
     standardize_long(bat_id, "NPX")
@@ -165,7 +156,7 @@ process_olink_ht <- function(filepath, bat_id) {
     mutate(ScaleFactor = IC_Count / median(IC_Count, na.rm = TRUE))
   df_olk_base <- raw_olk %>%
     filter(AssayType == "assay") %>%
-    mutate(UniProtID = clean_and_sort_str(UniProt), TargetName = clean_and_sort_str(Assay))
+    mutate(UniProtID = normalize_protein_ids(UniProt), TargetName = normalize_protein_ids(Assay))
   df_count_raw <- df_olk_base %>%
     select(SampleID, OlinkID, TargetName, UniProtID, Count) %>%
     rename(RawName = SampleID, AssayID = OlinkID, Value = Count) %>%
@@ -292,7 +283,7 @@ process_dia <- function(file_path, bat_id) {
     select(all_of(cols_to_keep)) %>%
     rename(PG_Raw = !!sym(pg_col), Genes_Raw = !!sym(gene_col)) %>%
     mutate(
-        UniProtID = clean_and_sort_str(PG_Raw), TargetName = clean_and_sort_str(Genes_Raw),
+        UniProtID = normalize_protein_ids(PG_Raw), TargetName = normalize_protein_ids(Genes_Raw),
         AssayID = NA_character_
     ) %>%
     pivot_longer(cols = -c(PG_Raw, Genes_Raw, UniProtID, TargetName, AssayID), names_to = "RawName", values_to = "Intensity") %>%
@@ -322,38 +313,13 @@ raw_stats <- temp_long[ProcessLevel %in% target_levels & Include == TRUE,
     rename(Raw_Assay_Count = n_rows)
 message(">>> Track 1 Stats calculated exclusively on Include == TRUE samples.")
 
-temp_long[, Distinction_Key := case_when(
-    Platform == "SOM" ~ AssayID, Platform %in% c("NLS", "AAG") ~ TargetName,
-    Platform %in% c("DIA", "OLK") ~ fcoalesce(UniProtID, TargetName), TRUE ~ TargetName
-)]
-temp_long[is.na(Distinction_Key) | Distinction_Key == ""]
-
-feat_meta_pre <- unique(temp_long[ProcessLevel %in% target_levels,
-                                  .(Platform, AssayID, TargetName, UniProtID, Distinction_Key)])
+temp_long <- as.data.table(add_feature_key(temp_long))
+if (any(is.na(temp_long$Distinction_Key) | temp_long$Distinction_Key == "")) stop("Feature keys are missing after platform-specific mapping.")
+feat_meta_pre <- unique(temp_long[ProcessLevel %in% target_levels, .(Platform, AssayID, TargetName, UniProtID, Distinction_Key)])
 
 uniprot_info <- as.data.table(uniprot_ref)[, .(UniProtID = Protein.ID, Protein_Full_Name = Protein.Fullname)]
 uniprot_info <- unique(uniprot_info, by = "UniProtID")
-feat_meta <- feat_meta_pre %>%
-    left_join(uniprot_info, by = "UniProtID") %>%
-    group_by(Platform, UniProtID) %>%
-    mutate(
-        Is_Tau_Primary = (UniProtID == "P10636" & TargetName %in% c("MAPT", "tTau")),
-        Is_Tau_Variant = (UniProtID == "P10636" & grepl("pTau", TargetName))
-    ) %>%
-    arrange(desc(Is_Tau_Primary), Is_Tau_Variant, Distinction_Key) %>%
-    mutate(
-        Rank = row_number(),
-        Suffix = Distinction_Key,
-        UniqueID = case_when(
-            Platform %in% c("DIA", "OLK") ~ UniProtID,
-            is.na(UniProtID) ~ Suffix,
-            Rank == 1 ~ UniProtID,
-            TRUE ~ paste0(UniProtID, "_", Suffix)
-        )
-    ) %>%
-    ungroup() %>%
-    mutate(Is_Protein_Group = grepl("[|;]", UniProtID), Is_Unknown = is.na(UniProtID) | UniProtID == "") %>%
-    as.data.table()
+feat_meta <- as.data.table(build_feature_mapping(feat_meta_pre, uniprot_info))
 
 map_dt <- unique(feat_meta[, .(Platform, Distinction_Key, UniqueID, UniProtID)])
 setkey(temp_long, Platform, Distinction_Key)
@@ -377,6 +343,9 @@ tier_dict <- c(
     "MedNormExt"= "Reshaped", "PlateScale"= "Intermediate", "MedNormInt"= "Intermediate"
 )
 long_df <- long_df %>% mutate(DataTier = tier_dict[ProcessLevel])
+# Detection and feature-level summaries include every single-accession feature.
+analysis_feature_pairs <- get_batch_analysis_features(feat_meta, long_df, strict_platforms = character())
+message("Batch-specific analysis feature pairs: ", nrow(analysis_feature_pairs))
 
 before_rows <- nrow(merged_long)
 after_rows <- nrow(long_df)
@@ -398,28 +367,16 @@ if(any(grepl(";", long_df$TargetName))) {warning("TargetName  contains semicolon
 message(">>> Calculating Detailed Batch Statistics...")
 batch_features <- long_df[Include == TRUE, .(UniqueID = unique(UniqueID)), by = .(Batch, Platform)]
 feat_type_map <- feat_meta[, .(UniqueID, Platform, Is_Protein_Group, Is_Unknown, UniProtID)] %>%
-    unique() %>%
-    mutate(
-        Mapping_Type = case_when(
-            Is_Unknown ~ "Unknown",
-            Is_Protein_Group ~ "Group",
-            Platform == "SOM" & grepl("_seq", UniqueID) ~ "Multi",
-            Platform %in% c("NLS", "AAG") & grepl("_", UniqueID) ~ "Multi",
-            TRUE ~ "Single"
-        )
-    ) %>% as.data.table()
+    unique() %>% as.data.table()
 
 calc_detailed_stats <- function(chunk, platform_name) {
     dt <- merge(chunk, feat_type_map[Platform == platform_name], by = "UniqueID", all.x = TRUE)
-    dt[, n_assays_per_tgt := .N, by = UniProtID]
+    dt[, n_assays_per_tgt := uniqueN(UniqueID), by = UniProtID]
+    dt[, Mapping_Type := fcase(Is_Unknown, "Unknown", Is_Protein_Group, "Group", n_assays_per_tgt > 1, "Multi", default = "Single")]
     list(
-        Analysis_Assays = uniqueN(dt$UniqueID), Assay_1to1 = sum(dt$Mapping_Type == "Single"),
+        Assay_1to1 = sum(dt$Mapping_Type == "Single"),
         Assay_Multi = sum(dt$Mapping_Type == "Multi"), Assay_Group = sum(dt$Mapping_Type == "Group"),
-        Assay_Unknown = sum(dt$Mapping_Type == "Unknown"),
-        Tgt_Total = uniqueN(dt$UniProtID[!is.na(dt$UniProtID)]),
-        Tgt_Single = uniqueN(dt$UniProtID[!is.na(dt$UniProtID) & dt$n_assays_per_tgt == 1]),
-        Tgt_Multi = uniqueN(dt$UniProtID[!is.na(dt$UniProtID) & dt$n_assays_per_tgt > 1]),
-        Tgt_Group = uniqueN(dt$UniProtID[dt$Mapping_Type == "Group"])
+        Assay_Unknown = sum(dt$Mapping_Type == "Unknown")
     )
 }
 
@@ -434,25 +391,16 @@ analysis_stats <- rbindlist(analysis_stats_list)
 batch_stats_final <- raw_stats %>%
     left_join(analysis_stats) %>%
     select(
-        Batch, `Total features` = Raw_Assay_Count, `Unique-target features` = Assay_1to1,
-        `Co-targeting features` = Assay_Multi, `Protein-group features` = Assay_Group,
-        `Unmapped features` = Assay_Unknown, `Total target proteins` = Tgt_Total,
-        `Single-feature proteins` = Tgt_Single, `Multi-feature proteins` = Tgt_Multi,
-        `Protein groups` = Tgt_Group
+        Batch, `Total features` = Raw_Assay_Count, `One-to-one features` = Assay_1to1,
+        `Many-to-one features` = Assay_Multi, `One-to-many features` = Assay_Group,
+        `Unmapped features` = Assay_Unknown
     ) %>%
     arrange(Batch)
 
-# Recorded notebook output (reference only; regenerate by running this script):
-# Imported batches: 17; imported sample columns: 684.
-# Rows before aggregation: 15,604,193; rows after aggregation: 15,601,013; observed reduction: 3,180.
-# Duplicate groups: 2,756; duplicate-group rows: 5,936; expected reduction: 3,180.
-# Aggregation validation passed; duplicate source: AAG.
-
 # 9. Export the article-specific release profile and metadata ----
-# The release profile retains the selected M/Y/P/X/F/N measurements and the BLK/CAL/QC controls used elsewhere in the manuscript. Internal raw names, tube identifiers, barcodes, laboratory codes and unrelated samples are not exported.
+# The release profile retains all assay features for the selected M/Y/P/X/F/N measurements and BLK/CAL/QC controls. Internal raw names, tube identifiers, barcodes, laboratory codes and unrelated samples are not exported.
 
-valid_features <- unique(feat_meta$UniqueID[!feat_meta$Is_Protein_Group & !feat_meta$Is_Unknown])
-message("Analysis features: ", length(valid_features))
+message("Analysis feature pairs: ", nrow(analysis_feature_pairs))
 
 dia_p04062 <- feat_meta %>%
     filter(Platform == "DIA", grepl("P04062", UniProtID)) %>%
@@ -466,10 +414,11 @@ if (length(dia_p04062) == 1 && identical(dia_p04062, "P04062")) {
     warning("DIA check failed: multiple P04062 forms were found: ", paste(dia_p04062, collapse = ", "))
 }
 
-if (any(grepl("_seq", feat_meta$UniqueID))) {
-    message("SomaScan isoform check passed: sequence-specific identifiers were preserved.")
-} else {
-    warning("SomaScan isoform check failed: no sequence-specific identifier was found.")
+soma_multi <- feat_meta %>% filter(Platform == "SOM", !Is_Protein_Group, !Is_Unknown) %>% group_by(UniProtID) %>% mutate(N_Assays = n_distinct(AssayID)) %>% ungroup()
+if (any(soma_multi$N_Assays > 1) && all(grepl("_seq", soma_multi$UniqueID[soma_multi$N_Assays > 1]))) {
+    message("SomaScan check passed: all multi-assay targets retain assay-specific identifiers.")
+} else if (any(soma_multi$N_Assays > 1)) {
+    stop("SomaScan multi-assay targets contain non-specific identifiers.")
 }
 
 tau_check <- feat_meta %>%
@@ -482,10 +431,9 @@ print(tau_check)
 release_core_samples <- c("M", "Y", "P", "X", "F", "N")
 release_control_samples <- c("BLK", "CAL", "QC")
 
-# Public profiles retain valid features, included reference samples and release controls.
+# Analysis eligibility is derived from feature metadata rather than imposed on the public profile.
 release_long_df <- as_tibble(long_df) %>%
     filter(
-        UniqueID %in% valid_features,
         (Include %in% TRUE & Sample %in% release_core_samples) | Sample %in% release_control_samples
     ) %>%
     select(-any_of(c("RawName", "Include"))) %>%
@@ -530,22 +478,15 @@ cat("Release profile rows:", format(nrow(release_long_df), big.mark = ","), "\n"
 cat("Release sample measurements:", length(release_colnames), "\n")
 cat("Release batches:", length(release_batches), "\n")
 
-# Recorded notebook output (reference only; regenerate by running this script):
-# Analysis features: 13,836
-# DIA check passed: GBA/GBA1 was merged to P04062.
-# SomaScan isoform check passed: sequence-specific identifiers were preserved.
-# NULISA tau forms: 6 (P10636, pTau181, pTau205, pTau212, pTau217 and pTau231).
-# Release profile rows: 9,030,107; release sample measurements: 488; release batches: 17.
-
 # 10. Platform-specific detection status ----
 # Detection is deliberately platform-specific and is not interpreted as a common sensitivity scale. The anchor tiers are:
 # - DIA and AAgAtlas: `Baseline`
 # - Olink, NULISA and SomaScan: `Calibrated`
 # A sample group passes when more than half of its included technical measurements exceed the platform-specific criterion. `IsDetected` is the primary status field. `IsAboveLoD` is retained as a backward-compatible alias for existing downstream code.
 
-valid_features <- unique(feat_meta$UniqueID[!feat_meta$Is_Protein_Group & !feat_meta$Is_Unknown])
 long_df_filter <- long_df %>%
-    filter(UniqueID %in% valid_features, Include == TRUE, DataTier %in% c("Baseline", "Calibrated", "Reshaped"))
+    semi_join(analysis_feature_pairs, by = c("Platform", "Batch", "UniqueID")) %>%
+    filter(Include == TRUE, DataTier %in% c("Baseline", "Calibrated", "Reshaped"))
 
 # A group passes when more than half of its expected replicates are detected.
 calc_detection_status <- function(long_data, meta_sample) {
@@ -571,6 +512,13 @@ calc_detection_status <- function(long_data, meta_sample) {
                 TRUE ~ FALSE
             )
         )
+
+    # SOM composite detection uses each contributing assay's own LoD before aggregation.
+    if ("IsDetectedMeasurement" %in% names(long_data)) {
+        composite_detected <- long_data$IsDetectedMeasurement
+        keep_composite <- long_data$Platform == "SOM" & !is.na(composite_detected)
+        df_det_check$IsDetectedMeasurement[keep_composite] <- composite_detected[keep_composite]
+    }
 
     global_stats <- df_det_check %>%
         group_by(DataTier, ProcessLevel, Batch, Platform, UniqueID) %>%
@@ -649,19 +597,30 @@ if (expected_unique_ids == actual_unique_ids) {
 
 fwrite(as.data.table(detection_status), "results/detection_status.tsv.gz", sep = "\t", na = "NA")
 
-# Recorded notebook output (reference only; regenerate by running this script):
-# Anchor-tier extraction: AAG Baseline 2,006; DIA Baseline 8,303; NLS Calibrated 127;
-# OLK Calibrated 11,540; SOM Calibrated 42,064.
-# Validation passed: all 13,158 features received an anchor-tier detection status.
+# Keep the original assay detection file for Figure 1 and ED2.
+# Quantitative analyses and ST1 use the aggregated SOM protein units.
+analyte_metadata <- analysis_feature_metadata(feat_meta)
+analyte_detection <- calc_detection_status(aggregate_som_profiles(long_df_filter), meta_sample) %>%
+    mutate(IsDetected = PassedGroup > 0, IsAboveLoD = IsDetected) %>%
+    filter((Platform %in% c("DIA", "AAG") & DataTier == "Baseline") |
+           (Platform %in% c("OLK", "SOM", "NLS") & DataTier == "Calibrated")) %>%
+    rename(AnchorTier = DataTier)
+stopifnot(!anyDuplicated(analyte_detection[c("Platform", "Batch", "UniqueID")]))
+fwrite(as.data.table(analyte_detection), "results/analyte_detection_status.tsv.gz", sep = "\t", na = "NA")
 
 # 11. Detection-summary source data ----
-df_counts <- detection_status %>%
+df_counts <- analyte_detection %>%
     mutate(Passed_Count = as.integer(M) + as.integer(F) + as.integer(Y) +
         as.integer(P) + as.integer(X) + as.integer(N)) %>%
     arrange(Batch)
 
-analyzed_counts <- df_counts %>%
-    count(Batch, name = "Analyzed features")
+# Protein coverage is counted from the analyzed set, not from all input mappings.
+analyzed_mapping <- df_counts %>% select(Batch, Platform, UniqueID) %>%
+    left_join(analyte_metadata %>% filter(!Is_Protein_Group, !Is_Unknown) %>% distinct(Platform, UniqueID, UniProtID),
+              by = c("Platform", "UniqueID"), relationship = "many-to-one")
+stopifnot(!anyNA(analyzed_mapping$UniProtID), !anyDuplicated(analyzed_mapping[c("Batch", "UniqueID")]))
+analyzed_counts <- analyzed_mapping %>% group_by(Batch) %>%
+    summarise(`Represented proteins` = n_distinct(UniProtID), `Analyzed analytes` = n(), .groups = "drop")
 
 threshold_wide <- expand.grid(Batch = unique(df_counts$Batch), Threshold = 1:6) %>%
     rowwise() %>%
@@ -690,10 +649,9 @@ st1_table <- batch_stats_final %>%
     left_join(analyzed_counts, by = "Batch") %>%
     left_join(threshold_wide, by = "Batch") %>%
     select(
-        Batch, `Total features`, `Unique-target features`, `Co-targeting features`,
-        `Protein-group features`, `Unmapped features`, `Total target proteins`,
-        `Single-feature proteins`, `Multi-feature proteins`, `Protein groups`,
-        `Analyzed features`, `Detected in ≥ 1 group`, `Detected in ≥ 2 groups`,
+        Batch, `Total features`, `One-to-one features`, `Many-to-one features`,
+        `One-to-many features`, `Unmapped features`, `Represented proteins`,
+        `Analyzed analytes`, `Detected in ≥ 1 group`, `Detected in ≥ 2 groups`,
         `Detected in ≥ 3 groups`, `Detected in ≥ 4 groups`,
         `Detected in ≥ 5 groups`, `Detected in 6 groups`
     ) %>%
@@ -702,29 +660,42 @@ st1_table <- batch_stats_final %>%
 stopifnot(
     !anyDuplicated(st1_table$Batch),
     setequal(st1_table$Batch, batch_stats_final$Batch),
-    !anyNA(st1_table)
+    !anyNA(st1_table),
+    all(st1_table$`Total features` == rowSums(st1_table[, c("One-to-one features", "Many-to-one features", "One-to-many features", "Unmapped features")])),
+    all(st1_table$`Represented proteins` <= st1_table$`Analyzed analytes`),
+    all(st1_table$`Analyzed analytes` <= st1_table$`One-to-one features` + st1_table$`Many-to-one features`)
 )
 
-write.xlsx(list(Analytical_feature_statistics = st1_table), "tables/SourceData_AnalyticalFeatureStatistics.xlsx", overwrite = TRUE, keepNA = TRUE, na.string = "NA")
+# Match the manuscript ST1 display while retaining numeric count cells.
+wb <- createWorkbook()
+st1_sheet <- "Analytical_feature_statistics"
+addWorksheet(wb, st1_sheet)
+modifyBaseFont(wb, fontName = "Aptos Narrow", fontSize = 12)
+st1_header <- createStyle(fontName = "Aptos Narrow", fontSize = 12, textDecoration = "bold", halign = "left", valign = "center")
+st1_body <- createStyle(fontName = "Aptos Narrow", fontSize = 12, halign = "left", valign = "center")
+writeData(wb, st1_sheet, st1_table, headerStyle = st1_header, keepNA = TRUE, na.string = "NA")
+st1_rows <- seq_len(nrow(st1_table)) + 1L
+addStyle(wb, st1_sheet, st1_body, rows = st1_rows, cols = seq_len(ncol(st1_table)), gridExpand = TRUE)
+addStyle(wb, st1_sheet, st1_header, rows = st1_rows, cols = 1, gridExpand = TRUE, stack = TRUE)
+addStyle(wb, st1_sheet, createStyle(numFmt = "#,##0"), rows = st1_rows, cols = 2:8, gridExpand = TRUE, stack = TRUE)
+setColWidths(wb, st1_sheet, cols = 1:14, widths = c(11, 12.5, 20, 20, 20, 17.5, 20, 15.83, 18.66, rep(19.66, 4), 18.16))
+setRowHeights(wb, st1_sheet, rows = seq_len(nrow(st1_table) + 1L), heights = 16)
+# This text-only worksheet has no drawing parts to reference.
+wb$worksheets[[1]]$drawing <- character(0)
+wb$worksheets_rels[[1]] <- wb$worksheets_rels[[1]][!grepl("/(drawing|vmlDrawing)\"", wb$worksheets_rels[[1]])]
+saveWorkbook(wb, "tables/SourceData_AnalyticalFeatureStatistics.xlsx", overwrite = TRUE)
 
 # 12. Final validation summary ----
 profile_outputs <- c(
     "data/protein_profiles_long.tsv.gz", "data/feature_metadata.tsv.gz", "data/study_metadata.xlsx",
-    "results/detection_status.tsv.gz", "tables/SourceData_AnalyticalFeatureStatistics.xlsx"
+    "results/detection_status.tsv.gz", "results/analyte_detection_status.tsv.gz",
+    "tables/SourceData_AnalyticalFeatureStatistics.xlsx"
 )
 stopifnot(all(file.exists(profile_outputs)))
 
 cat("Internal batches processed:", n_distinct(long_df$Batch), "\n")
 cat("Release batches:", n_distinct(release_long_df$Batch), "\n")
-cat("Analysis features:", n_distinct(valid_features), "\n")
+cat("Analysis feature pairs:", nrow(analysis_feature_pairs), "\n")
 cat("Release profile rows:", format(nrow(release_long_df), big.mark = ","), "\n")
 cat("Detection-status rows:", format(nrow(detection_status), big.mark = ","), "\n")
 cat("All expected outputs are present.\n")
-
-# Recorded notebook output (reference only; regenerate by running this script):
-# Internal batches processed: 17
-# Release batches: 17
-# Analysis features: 13,836
-# Release profile rows: 9,030,107
-# Detection-status rows: 64,040
-# All expected outputs are present.

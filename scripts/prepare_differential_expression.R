@@ -5,6 +5,7 @@ source("scripts/_project_setup.R")
 use_packages(c("data.table", "tidyverse", "readxl", "limma"))
 source("utils/imputation.R")
 source("utils/differential_analysis.R")
+source("utils/feature_mapping.R")
 stable_seed <- function(..., base_seed = 999L) {
     parts <- vapply(list(...), as.character, character(1))
     code <- utf8ToInt(enc2utf8(paste(parts, collapse = "|")))
@@ -24,10 +25,9 @@ meta_sample <- read_xlsx("data/study_metadata.xlsx", sheet = "sample")
 analysis_samples <- c("M", "Y", "P", "X", "F", "N")
 meta_sample_analysis <- meta_sample %>% filter(Sample %in% analysis_samples)
 
-feat_meta <- fread("data/feature_metadata.tsv.gz") %>% filter(!Is_Protein_Group, !Is_Unknown)
-valid_features <- unique(feat_meta$UniqueID)
+feat_meta <- analysis_feature_metadata(fread("data/feature_metadata.tsv.gz"))
 
-lod_status <- fread("results/detection_status.tsv.gz")
+lod_status <- fread("results/analyte_detection_status.tsv.gz")
 missing_detection_columns <- setdiff(analysis_samples, colnames(lod_status))
 if (length(missing_detection_columns)) stop("Detection table is missing columns: ", paste(missing_detection_columns, collapse = ", "))
 
@@ -36,9 +36,11 @@ lod_join <- lod_status %>%
     group_by(Batch, UniqueID) %>%
     summarize(across(all_of(analysis_samples), ~ any(.x %in% TRUE)), .groups = "drop")
 
-long_df <- fread("data/protein_profiles_long.tsv.gz")
+long_df <- aggregate_som_profiles(fread("data/protein_profiles_long.tsv.gz"))
+# Use SOM protein composites and the unchanged named analytes from other platforms.
+long_df <- filter_batch_analysis_features(long_df, feat_meta, strict_platforms = character())
 long_df_filter <- long_df %>%
-    filter(UniqueID %in% valid_features, DataTier %in% c("Baseline", "Calibrated", "Reshaped"))
+    filter(DataTier %in% c("Baseline", "Calibrated", "Reshaped"))
 
 # 2. Stable technical-replicate selection ----
 # Each Batch × Sample group receives an independent seed, so other sample groups cannot alter its selection.

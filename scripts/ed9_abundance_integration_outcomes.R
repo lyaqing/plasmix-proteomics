@@ -4,12 +4,15 @@
 source("scripts/_project_setup.R")
 use_packages(c("data.table", "tidyverse", "ggpubr", "openxlsx", "showtext"))
 source("utils/figure_style.R")
+source("utils/feature_mapping.R")
 plasmix_theme <- if (is.function(theme_plasmix)) theme_plasmix() else theme_plasmix
 showtext_auto(); showtext_opts(dpi = 600)
 label_style <- list(size = 12, face = "bold")
 paths <- c(fig6_inputs = "results/fig6_extended_data_inputs.rds", profiles = "data/protein_profiles_long.tsv.gz",
            feature_metadata = "data/feature_metadata.tsv.gz", physchem = "data/physchem_matrix.tsv.gz")
 check_inputs(paths)
+feature_metadata <- analysis_feature_metadata(fread(paths["feature_metadata"]))
+profile_data <- aggregate_som_profiles(fread(paths["profiles"])) %>% filter_batch_analysis_features(feature_metadata)
 
 # 1. Reconstruct final outcome groups and any annotations absent from the frozen Figure 6 object ----
 fig6_ed_inputs <- readRDS(paths["fig6_inputs"])
@@ -23,7 +26,7 @@ if (!("Native_Low_Side_Rank" %in% names(consensus_voting))) {
     balanced_feature_pairs <- fig6_ed_inputs$method_feature_results %>% filter(Design == "Balanced") %>%
         distinct(Detailed_Type, Batch1, Batch2, UniqueID)
     selected_batches <- union(balanced_feature_pairs$Batch1, balanced_feature_pairs$Batch2)
-    native_rank_by_batch <- fread(paths["profiles"]) %>% as_tibble() %>%
+    native_rank_by_batch <- profile_data %>%
         filter(Batch %in% selected_batches,
                (Platform == "DIA" & DataTier == "Baseline" & ProcessLevel == "Intensity") |
                (Platform == "OLK" & DataTier == "Calibrated" & str_detect(ProcessLevel, regex("NPX", ignore_case = TRUE))) |
@@ -51,8 +54,7 @@ if (!("BloodConc_log10_pgml" %in% names(consensus_voting)) && !is.null(fig6_ed_i
 
 if (!("BloodConc_log10_pgml" %in% names(consensus_voting)) && file.exists(paths["physchem"])) {
     physchem_matrix <- fread(paths["physchem"]) %>% as_tibble()
-    if (!("UniProtID" %in% names(consensus_voting)) && file.exists(paths["feature_metadata"])) {
-        feature_metadata <- fread(paths["feature_metadata"]) %>% as_tibble()
+    if (!("UniProtID" %in% names(consensus_voting))) {
         entry_column <- intersect(c("UniProtID", "UniProt_ID", "UniProt", "Uniprot", "Entry", "ProteinID"), names(feature_metadata))[1]
         if (length(entry_column) && !is.na(entry_column)) {
             id_map <- feature_metadata %>% transmute(UniqueID, UniProtID = as.character(.data[[entry_column]])) %>% distinct(UniqueID, .keep_all = TRUE)

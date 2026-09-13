@@ -4,6 +4,7 @@
 source("scripts/_project_setup.R")
 use_packages(c("data.table", "tidyverse", "readxl", "ComplexHeatmap", "circlize", "ggridges", "ggpubr", "ggplotify", "openxlsx", "showtext"))
 source("utils/figure_style.R")
+source("utils/feature_mapping.R")
 plasmix_theme <- if (is.function(theme_plasmix)) theme_plasmix() else theme_plasmix
 showtext_auto(); showtext_opts(dpi = 600)
 label_style <- list(size = 12, face = "bold")
@@ -19,12 +20,14 @@ print(input_check)
 stopifnot(all(input_check$Exists))
 
 meta_batch <- read_xlsx(paths["metadata"], sheet = "batch")
-feat_meta <- fread(paths["feature_metadata"]) %>% filter(!Is_Protein_Group, !Is_Unknown)
-valid_features <- unique(feat_meta$UniqueID)
+feat_meta <- fread(paths["feature_metadata"])
 
 detection_status <- fread(paths["detection"])
 physchem_matrix <- fread(paths["physchem"])
 long_df <- fread(paths["profiles"])
+long_df <- filter_batch_analysis_features(long_df, feat_meta, strict_platforms = character())
+detection_status <- detection_status %>% semi_join(distinct(long_df, Platform, Batch, UniqueID), by = c("Platform", "Batch", "UniqueID"))
+stopifnot(nrow(anti_join(distinct(long_df, Platform, Batch, UniqueID), detection_status, by = c("Platform", "Batch", "UniqueID"))) == 0)
 
 required_hpa_columns <- c(
     "Entry", "BloodConc_log10_pgml", "Abundance_Source", "HPA_Protein_Class", "HPA_Subcellular"
@@ -42,12 +45,11 @@ hpa_conc <- hpa_annotation %>%
 
 long_df_filter <- long_df %>%
     filter(
-        UniqueID %in% valid_features, Sample %in% c("M", "Y", "P", "X", "F", "N"),
+        Sample %in% c("M", "Y", "P", "X", "F", "N"),
         DataTier == "Baseline" | Batch %in% c("OLK_P1_B1", "OLK_P1_B2")
     )
 
 # 2. Panel b: HPA-referenced abundance distributions ----
-
 protocol_proteins <- long_df_filter %>%
     distinct(Platform, Batch, UniProtID) %>%
     filter(!is.na(UniProtID), UniProtID != "") %>%
@@ -89,7 +91,6 @@ p_abundance <- ggplot(abundance_plot_data, aes(x = BloodConc_log10_pgml, y = Pro
 p_abundance
 
 # 3. Shared annotation functions for the UpSet panels ----
-
 subcellular_colors <- c(
     "Secreted" = "#E41A1C",
     "Membrane" = "#377EB8",
@@ -109,10 +110,12 @@ hpa_subcell <- hpa_annotation %>%
         Subcellular_Factor = factor(replace_na(HPA_Subcellular, "Unknown"), levels = location_levels)
     )
 
-get_subcell_counts <- function(protein_lists) {
+get_subcell_counts <- function(protein_lists, accession_ids = FALSE) {
+    ids <- unique(unlist(protein_lists, use.names = FALSE))
+    id_map <- if (accession_ids) tibble(UniqueID = ids, UniProtID = ids) else feat_meta %>% select(UniqueID, UniProtID) %>% distinct()
     composition <- lapply(names(protein_lists), function(name) {
         mapped <- tibble(UniqueID = protein_lists[[name]]) %>%
-            left_join(feat_meta %>% select(UniqueID, UniProtID) %>% distinct(), by = "UniqueID") %>%
+            left_join(id_map, by = "UniqueID") %>%
             left_join(
                 hpa_subcell %>% select(UniProtID, Subcellular, Subcellular_Factor) %>% distinct(),
                 by = "UniProtID"
@@ -148,7 +151,6 @@ transform_stacked_counts <- function(x) {
 # format_axis_counts <- function(x) format(x, big.mark = ",", scientific = FALSE, trim = TRUE)
 
 # 4. Panel c: DIA protocol target overlap ----
-
 dia_metadata <- meta_batch %>% filter(Platform == "DIA")
 dia_protocol_proteins <- list()
 
@@ -207,7 +209,7 @@ upset_dia <- UpSet(
     right_annotation = rowAnnotation(
         "Protein composition" = anno_barplot(
             dia_set_composition,
-            bar_width = 0.5,
+            bar_width = 0.6,
             gp = gpar(
                 fill = subcellular_colors[colnames(dia_set_composition)],
                 lwd = 0.2
@@ -219,7 +221,7 @@ upset_dia <- UpSet(
         "Total labels" = anno_barplot(
             dia_set_sizes,
             gp = gpar(fill = "transparent", col = "transparent"),
-            bar_width = 0.5,
+            bar_width = 0.6,
             add_numbers = TRUE,
             numbers_rot = 0,
             numbers_gp = gpar(fontsize = 6, col = "black"),
@@ -234,15 +236,16 @@ upset_dia <- UpSet(
     )
 )
 
-# 5. Panel d: cross-platform target overlap ----
-
+# 5. Panel d: cross-platform protein coverage by UniProt accession ----
 platform_labels <- c(DIA = "MS-DIA", SOM = "SomaScan", OLK = "Olink", NLS = "NULISA", AAG = "AAgAtlas")
 
 platform_proteins <- list()
 for (platform_code in names(platform_labels)) {
     platform_proteins[[platform_labels[[platform_code]]]] <- detection_status %>%
         filter(Platform == platform_code) %>%
-        pull(UniqueID) %>%
+        inner_join(feat_meta %>% distinct(Platform, UniqueID, UniProtID), by = c("Platform", "UniqueID")) %>%
+        filter(!is.na(UniProtID), UniProtID != "") %>%
+        pull(UniProtID) %>%
         unique()
 }
 
@@ -255,9 +258,9 @@ platform_combination_lists <- lapply(
 )
 names(platform_combination_lists) <- platform_combination_names
 
-platform_combination_composition <- get_subcell_counts(platform_combination_lists)
+platform_combination_composition <- get_subcell_counts(platform_combination_lists, accession_ids = TRUE)
 platform_combination_composition_plot <- transform_stacked_counts(platform_combination_composition)
-platform_set_composition <- get_subcell_counts(platform_proteins)[set_name(platform_combination), , drop = FALSE]
+platform_set_composition <- get_subcell_counts(platform_proteins, accession_ids = TRUE)[set_name(platform_combination), , drop = FALSE]
 platform_set_sizes <- set_size(platform_combination)
 platform_axis_breaks <- c(0, 100, 1000, 8000)
 platform_axis_limit <- intersection_height(8000) * 1.15
@@ -291,7 +294,7 @@ upset_platform <- UpSet(
     right_annotation = rowAnnotation(
         "Protein composition" = anno_barplot(
             platform_set_composition,
-            bar_width = 0.5,
+            bar_width = 0.6,
             gp = gpar(
                 fill = subcellular_colors[colnames(platform_set_composition)],
                 lwd = 0.2
@@ -303,18 +306,18 @@ upset_platform <- UpSet(
         "Total labels" = anno_barplot(
             platform_set_sizes,
             gp = gpar(fill = "transparent", col = "transparent"),
-            bar_width = 0.5,
+            bar_width = 0.6,
             add_numbers = TRUE,
             numbers_rot = 0,
             numbers_gp = gpar(fontsize = 6, col = "black"),
-            numbers_offset = unit(-1.35, "cm"),
+            numbers_offset = unit(-1.25, "cm"),
             border = FALSE,
             width = unit(1.5, "cm"),
             axis = FALSE
         ),
         show_annotation_name = FALSE,
         annotation_name_gp = gpar(fontsize = c(9, 0)),
-        gap = unit(-0.55, "cm")
+        gap = unit(-0.65, "cm")
     )
 )
 
@@ -337,7 +340,7 @@ dia_grob <- grid.grabExpr({
 })
 
 platform_grob <- grid.grabExpr({
-    drawn <- draw(upset_platform, newpage = FALSE, padding = unit(c(0, 0, 1.5, 0), "mm"))
+    drawn <- draw(upset_platform, newpage = FALSE, padding = unit(c(0, 0, 3, 0), "mm"))
     ordered_columns <- column_order(drawn)
     decorate_annotation("Intersection\ncount", {
         values <- comb_size(platform_combination)[ordered_columns]
@@ -458,8 +461,8 @@ protocol_summary <- protocol_summary %>%
 dia_membership <- enframe(dia_protocol_proteins, name = "Protocol", value = "UniqueID") %>%
     unnest_longer(UniqueID)
 
-platform_membership <- enframe(platform_proteins, name = "Platform", value = "UniqueID") %>%
-    unnest_longer(UniqueID)
+platform_membership <- enframe(platform_proteins, name = "Platform", value = "UniProtID") %>%
+    unnest_longer(UniProtID)
 
 output_file <- "tables/SourceData_Figure1.xlsx"
 write.xlsx(
@@ -495,6 +498,64 @@ addStyle(
     rows = summary_rows, cols = 3:ncol(protocol_summary), gridExpand = TRUE, stack = TRUE
 )
 
+# ST3: protein coverage intersections and subcellular localization ----
+build_intersection_summary <- function(combination, set_counts, combination_counts, set_order) {
+    combination_ids <- comb_name(combination)
+    members <- matrix(as.integer(unlist(strsplit(combination_ids, "", fixed = TRUE))), nrow = length(combination_ids), byrow = TRUE,
+                      dimnames = list(combination_ids, set_name(combination)))[, set_order, drop = FALSE]
+    sizes <- as.integer(comb_size(combination))
+    total_sizes <- as.integer(set_size(combination)[match(set_order, set_name(combination))])
+    set_counts <- set_counts[set_order, names(subcellular_colors), drop = FALSE]
+    combination_counts <- combination_counts[combination_ids, names(subcellular_colors), drop = FALSE]
+    stopifnot(all(rowSums(set_counts) == total_sizes), all(rowSums(combination_counts) == sizes),
+              all(as.vector(crossprod(members, sizes)) == total_sizes))
+    headers <- c(set_order, "Intersection size", "Secreted", "Membrane", "Intracellular", "Secreted & membrane", "Unknown")
+    totals <- data.frame(ifelse(diag(length(set_order)) == 1, "\u25CF", NA_character_), total_sizes, set_counts, check.names = FALSE)
+    intersections <- data.frame(ifelse(members == 1, "\u25CF", NA_character_), sizes, combination_counts, check.names = FALSE)
+    names(totals) <- names(intersections) <- headers
+    intersections <- intersections[order(-sizes, combination_ids), , drop = FALSE]
+    rownames(totals) <- rownames(intersections) <- NULL
+    list(totals = totals, intersections = intersections)
+}
+
+st3_dia <- build_intersection_summary(dia_combination, dia_set_composition, dia_combination_composition, names(dia_protocol_proteins))
+st3_platform <- build_intersection_summary(platform_combination, platform_set_composition, platform_combination_composition, names(platform_proteins))
+st3_sheet <- "Feature_intersections"
+if (st3_sheet %in% names(wb)) removeWorksheet(wb, st3_sheet)
+addWorksheet(wb, st3_sheet)
+st3_body <- createStyle(fontName = "Aptos Narrow", fontSize = 12, halign = "center", valign = "center")
+st3_header <- createStyle(fontName = "Aptos Narrow", fontSize = 12, textDecoration = "bold", halign = "center", valign = "center")
+st3_title <- createStyle(fontName = "Aptos Narrow", fontSize = 12, textDecoration = "bold", halign = "left", valign = "center")
+st3_band <- createStyle(fontName = "Aptos Narrow", fontSize = 12, textDecoration = "bold", halign = "center", valign = "center", fgFill = "#E8E8E8")
+
+write_intersection_section <- function(summary, title, start_row) {
+    total_rows <- start_row + 2L + seq_len(nrow(summary$totals))
+    intersection_label <- max(total_rows) + 1L
+    intersection_rows <- intersection_label + seq_len(nrow(summary$intersections))
+    last_row <- max(intersection_rows)
+    writeData(wb, st3_sheet, title, startRow = start_row, colNames = FALSE)
+    writeData(wb, st3_sheet, t(names(summary$totals)), startRow = start_row + 1L, colNames = FALSE)
+    writeData(wb, st3_sheet, "(Totals)", startRow = start_row + 2L, colNames = FALSE)
+    writeData(wb, st3_sheet, summary$totals, startRow = min(total_rows), colNames = FALSE, rowNames = FALSE)
+    writeData(wb, st3_sheet, "(Intersections)", startRow = intersection_label, colNames = FALSE)
+    writeData(wb, st3_sheet, summary$intersections, startRow = min(intersection_rows), colNames = FALSE, rowNames = FALSE)
+    addStyle(wb, st3_sheet, st3_body, rows = start_row:last_row, cols = 1:11, gridExpand = TRUE)
+    addStyle(wb, st3_sheet, st3_title, rows = start_row, cols = 1, stack = TRUE)
+    addStyle(wb, st3_sheet, st3_header, rows = start_row + 1L, cols = 1:11, gridExpand = TRUE, stack = TRUE)
+    addStyle(wb, st3_sheet, st3_band, rows = c(start_row + 2L, intersection_label), cols = 1:11, gridExpand = TRUE, stack = TRUE)
+    addStyle(wb, st3_sheet, createStyle(numFmt = "#,##0"), rows = c(total_rows, intersection_rows), cols = 6:11, gridExpand = TRUE, stack = TRUE)
+    setRowHeights(wb, st3_sheet, rows = start_row:last_row, heights = 16)
+    last_row
+}
+
+st3_section_a_end <- write_intersection_section(st3_dia, "Section A: DIA-MS pre-analytical protocol intersections", 1L)
+st3_section_b_end <- write_intersection_section(st3_platform, "Section B: Technology platform protein intersections (distinct UniProt accessions)", st3_section_a_end + 4L)
+setColWidths(wb, st3_sheet, cols = 1:11, widths = c(15, 13.5, 12.16, 11, 13.83, 17, 9.83, 11.33, 12.5, 23, 10))
+# These source-data worksheets contain no drawing parts to reference.
+for (i in seq_along(wb$worksheets)) {
+    wb$worksheets[[i]]$drawing <- character(0)
+    wb$worksheets_rels[[i]] <- wb$worksheets_rels[[i]][!grepl("/(drawing|vmlDrawing)\"", wb$worksheets_rels[[i]])]
+}
 saveWorkbook(wb, output_file, overwrite = TRUE)
 
 print(protocol_summary)

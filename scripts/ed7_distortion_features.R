@@ -1,8 +1,9 @@
-# Extended Data Figure 6 | Physicochemical drivers of distortion
+# Extended Data Figure 7 | Physicochemical drivers of distortion
 
 # 0. Setup ----
 source("scripts/_project_setup.R")
 use_packages(c("data.table", "tidyverse", "ggh4x", "ggpubr", "patchwork", "ggtext", "openxlsx", "showtext", "grid"))
+if (!requireNamespace("randomForest", quietly = TRUE)) stop("Package 'randomForest' is required for Extended Data Figure 7.")
 source("utils/figure_style.R")
 plasmix_theme <- if (is.function(theme_plasmix)) theme_plasmix() else theme_plasmix
 showtext_auto(); showtext_opts(dpi = 600)
@@ -13,12 +14,12 @@ paths <- c(
     analysis_context = "results/fig4_analysis_results.rds"
 )
 missing_inputs <- paths[!file.exists(paths)]
-if(length(missing_inputs)) stop("Missing Extended Data Figure 6 inputs:\n", paste(missing_inputs, collapse = "\n"))
+if(length(missing_inputs)) stop("Missing Extended Data Figure 7 inputs:\n", paste(missing_inputs, collapse = "\n"))
 
 # 1. Physicochemical features and model objects ----
 physchem_matrix <- fread(paths["physchem"]) %>% as_tibble()
 physchem_dict <- fread(paths["physchem_dictionary"]) %>% as_tibble()
-ed6_context <- readRDS(paths["analysis_context"])
+ed7_context <- readRDS(paths["analysis_context"])
 
 cat_colors <- c("Structure" = "#E64B35", "Surface" = "#4DBBD5", "Charge" = "#00A087", "Disorder" = "#F39B7F", "Secretory" = "#8491B4", "Abundance" = "#91D1C2")
 category_order <- c("Structure", "Surface", "Charge", "Disorder", "Secretory", "Abundance")
@@ -35,10 +36,10 @@ map_name <- function(x, map) {
     ifelse(is.na(y), as.character(x), y)
 }
 
-datasets <- ed6_context$datasets
-global_models <- ed6_context$models
-target_properties <- as.character(ed6_context$target_properties)
-prop_categories <- ed6_context$prop_categories %>%
+datasets <- ed7_context$datasets
+global_models <- ed7_context$models
+target_properties <- as.character(ed7_context$target_properties)
+prop_categories <- ed7_context$prop_categories %>%
     mutate(Property = factor(as.character(Property), levels = target_properties)) %>%
     arrange(Property)
 platforms_to_run <- c("SOM", "OLK", "DIA")
@@ -261,7 +262,7 @@ pdp_1d_all <- pmap_dfr(
         })
     }
 )
-write.csv(pdp_1d_all, "results/ed6_pdp_1d_full_intersect.csv", row.names = FALSE)
+write.csv(pdp_1d_all, "results/ed7_pdp_1d_full_intersect.csv", row.names = FALSE)
 
 ## 1D-ALE Calculation ----
 K_ale <- 20
@@ -326,7 +327,7 @@ ale_1d_all <- pmap_dfr(ale_feature_tbl, function(Dataset, Platform, Feature) {
         mutate(Dataset = ds, Platform = plat, Property = map_name(Feature, name_map_chr),
                Category = map_name(Feature, cat_map_chr), Scale = "log2 model scale")
 })
-write.csv(ale_1d_all, "results/ed6_ale_1d_full_intersect.csv", row.names = FALSE)
+write.csv(ale_1d_all, "results/ed7_ale_1d_full_intersect.csv", row.names = FALSE)
 
 ## Curve classification and summarization ----
 safe_cor <- function(x, y) {
@@ -501,8 +502,8 @@ top_row <- ggarrange(p_corr, sp_wilcox, ncol = 2, widths = c(1, 1.5),
                     labels = c("a", "b"), font.label = label_style, label.x = 0, label.y = 1, hjust = -0.2, vjust = 1.2)
 fig_supp_combined <- ggarrange(top_row, p_pdp_all, p_ale_all, nrow = 3, heights = c(1.18, 1.05, 1),
                               labels = c("", "c", "d"), font.label = label_style, label.x = 0, label.y = 1, hjust = -0.2, vjust = 1.2)
-ggsave("figures/ed6_distortion_features.pdf", fig_supp_combined, width = 10, height = 11)
-ggsave("figures/ed6_distortion_features.png", fig_supp_combined, width = 10, height = 11, dpi = 600, bg = "white")
+ggsave("figures/ed7_distortion_features.pdf", fig_supp_combined, width = 10, height = 11)
+ggsave("figures/ed7_distortion_features.png", fig_supp_combined, width = 10, height = 11, dpi = 600, bg = "white")
 
 # 6. Source data ----
 # ST: Wilcoxon Significance Matrix (P-values)
@@ -531,12 +532,12 @@ st_wilcox_structured <- wilcox_wide_df %>%
               -c(Category, Property, Dataset, Platform)) %>%
   mutate(across(starts_with("Threshold"), format_pvalue))
 
-ed6_source_data <- list(
+ed7_source_data <- list(
     "Property_Correlation" = plot_cor_df,
     "Wilcoxon_P" = st_wilcox_structured,
     "PDP_Summary" = pdp_summary,
     "ALE_Summary" = ale_summary
 )
-write.xlsx(ed6_source_data, "tables/SourceData_EDFigure6.xlsx", overwrite = TRUE)
+write.xlsx(ed7_source_data, "tables/SourceData_EDFigure7.xlsx", overwrite = TRUE)
 
-message("Extended Data Figure 6 completed: figures/ed6_distortion_features.pdf；source data: tables/SourceData_ExtendedDataFigure6.xlsx")
+message("Extended Data Figure 7 completed: figures/ed7_distortion_features.pdf；source data: tables/SourceData_EDFigure7.xlsx")

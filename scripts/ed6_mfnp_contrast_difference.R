@@ -1,18 +1,20 @@
-# Extended Data Figure 5 | M/F and N/P contrast differences
+# Extended Data Figure 6 | M/F and N/P contrast differences
 
 # 0. Setup ----
 source("scripts/_project_setup.R")
 use_packages(c("data.table", "tidyverse", "readxl", "ggpubr", "ggridges", "smplot2", "openxlsx", "grid", "metap"), c("clusterProfiler", "org.Hs.eg.db"))
 source("utils/figure_style.R")
+source("utils/feature_mapping.R")
 plasmix_theme <- if (is.function(theme_plasmix)) theme_plasmix() else theme_plasmix
 label_style <- list(size = 12, face = "bold")
 
 # 1. Inputs ----
 required_inputs <- c("results/dea_df_multi.tsv.gz", "data/feature_metadata.tsv.gz")
 missing_inputs <- required_inputs[!file.exists(required_inputs)]
-if (length(missing_inputs)) stop("Missing Extended Data Figure 5 inputs: ", paste(missing_inputs, collapse = ", "))
+if (length(missing_inputs)) stop("Missing Extended Data Figure 6 inputs: ", paste(missing_inputs, collapse = ", "))
 dea_df_multi <- fread("results/dea_df_multi.tsv.gz")
-feat_meta <- fread("data/feature_metadata.tsv.gz") %>% filter(!Is_Protein_Group, !Is_Unknown)
+feature_metadata <- analysis_feature_metadata(fread("data/feature_metadata.tsv.gz"))
+feat_meta <- feature_metadata %>% filter(!Is_Protein_Group, !Is_Unknown)
 uniprot <- read_tsv(upstream_path("references", "uniprotkb_AND_model_organism_9606_2026_04_01.tsv.gz"), show_col_types = FALSE) %>%
     transmute(Protein.ID = Entry, Gene.Symbol = `Gene Names (primary)`) %>% distinct(Protein.ID, .keep_all = TRUE)
 
@@ -163,7 +165,13 @@ consensus_base <- dea_df_multi %>%
             (Platform %in% c("OLK", "SOM", "NLS") & DataTier == "Calibrated")
     )
 
-df_verified <- consensus_base %>% filter(Classification == "Verified-DEP")
+# One support vote per protein and batch; opposing verified assay effects do not supply a vote.
+verified_assay_evidence <- consensus_base %>% filter(Classification == "Verified-DEP") %>%
+    inner_join(feature_metadata %>% distinct(Platform, UniqueID, UniProtID), by = c("Platform", "UniqueID"), relationship = "many-to-one")
+batch_protein_evidence <- verified_assay_evidence %>% group_by(Pair, Platform, Batch, UniProtID) %>%
+    summarize(N_Assays = n_distinct(UniqueID), Direction_Conflict = n_distinct(sign(logFC)) > 1,
+              logFC = mean(logFC), P.Value = max(P.Value), .groups = "drop")
+df_verified <- batch_protein_evidence %>% filter(!Direction_Conflict) %>% rename(UniqueID = UniProtID)
 
 dea_merge <- df_verified %>%
     mutate(Direction_temp = ifelse(logFC > 0, "Up", "Down")) %>%
@@ -176,6 +184,7 @@ dea_merge <- df_verified %>%
     ungroup() %>%
     group_by(Pair, UniqueID) %>%
     filter(n_batch_dir == max(n_batch_dir)) %>%
+    filter(n_distinct(Direction_temp) == 1L) %>%
     summarize(
         combined_logFC = median(logFC, na.rm = TRUE),
         combined_p = tryCatch({
@@ -196,7 +205,7 @@ dea_merge <- df_verified %>%
     ) %>%
     ungroup()
 
-fwrite(dea_merge, "results/ed5_dea_consensus.tsv.gz", sep = "\t", na = "NA")
+fwrite(dea_merge, "results/ed6_dea_consensus.tsv.gz", sep = "\t", na = "NA")
 
 avglogfc <- dea_merge %>% rename(avglogFC = combined_logFC, Freq = n_batches)
 
@@ -281,7 +290,7 @@ plot_input <- dea_merge %>%
     transmute(Pair, UniProtID = sub("_.*", "", UniqueID)) %>%
     distinct()
 
-# Define a shared measured-protein universe from the feature metadata.
+# Use the complete valid feature metadata for both contrasts, independently of DEA availability.
 universe_uniprot <- feat_meta %>%
     transmute(UniProtID = as.character(UniProtID)) %>%
     filter(!is.na(UniProtID), UniProtID != "") %>%
@@ -307,7 +316,6 @@ if (nrow(foreground_outside_universe) > 0) {
 message("GO foreground: M/F = ", n_distinct(final_data$ENTREZID[final_data$Pair == "M/F"]),
         "; N/P = ", n_distinct(final_data$ENTREZID[final_data$Pair == "N/P"]),
         "; shared measured-protein universe = ", length(universe_entrez))
-# GO foreground: M/F = 100; N/P = 560; shared measured-protein universe = 12548
 
 run_go <- function(ont_use) {
     comp_res <- clusterProfiler::compareCluster(
@@ -347,15 +355,27 @@ description_levels <- enrich_summary_plot %>%
     pull(Description_key) %>% unique()
 
 enrich_summary_plot <- enrich_summary_plot %>%
-    mutate(Description_key = factor(Description_key, levels = description_levels))
+    mutate(Description_key = factor(Description_key, levels = description_levels), Cluster = factor(Cluster, levels = c("M/F", "N/P")))
+
+# Keep a contrast visible when no biological-process term passes the enrichment thresholds.
+go_contrast_counts <- plot_input %>% count(Pair, name = "Consensus_proteins") %>%
+    complete(Pair = c("M/F", "N/P"), fill = list(Consensus_proteins = 0L))
+go_contrast_labels <- c("M/F" = "M/F", "N/P" = "N/P")
+go_empty_panels <- go_contrast_counts %>% filter(!Pair %in% as.character(enrich_summary_plot$Cluster)) %>%
+    transmute(Ontology = "BP", Cluster = factor(Pair, levels = c("M/F", "N/P")),
+              x = max(c(1, enrich_summary_plot$FoldEnrichment), na.rm = TRUE) / 2,
+              y = (max(1L, n_distinct(enrich_summary_plot$Description)) + 1) / 2,
+              Label = "No significant BP enrichment")
 
 ontology_labs <- c(BP = "Biological process", CC = "Cellular component", MF = "Molecular function")
 
 p_go <- ggplot(enrich_summary_plot, aes(x = FoldEnrichment, y = reorder(Description, FoldEnrichment))) +
     geom_segment(aes(x = 0, xend = FoldEnrichment, y = Description, yend = Description), color = "gray90", linewidth = 0.8) +
     geom_point(aes(size = Count, fill = -log10(p.adjust)), alpha = 0.8, color = "black", shape = 21) +
+    geom_text(data = go_empty_panels, aes(x = x, y = y, label = Label), inherit.aes = FALSE, size = 2.8, color = "grey40") +
     scale_fill_viridis_c(option = "rocket", name = expression(bold(-log[10](P[adj]))), direction = -1, end = 0.8, breaks = c(5, 15, 25)) +
-    facet_grid(Ontology ~ Cluster, scales = "free_y", space = "free", labeller = labeller(Ontology = as_labeller(ontology_labs))) +
+    facet_grid(Ontology ~ Cluster, scales = "free_y", space = "free", drop = FALSE,
+               labeller = labeller(Ontology = as_labeller(ontology_labs), Cluster = as_labeller(go_contrast_labels))) +
     scale_size_continuous(range = c(1, 5), name = "Protein\ncount", breaks = c(5, 10, 20, 40, 60, 80)) +
     scale_y_discrete(labels = function(x) str_wrap(x, width = 90)) +
     scale_x_continuous(expand = expansion(mult = c(0, 0.02)), limits = c(0, NA)) +
@@ -383,8 +403,8 @@ top_block <- ggarrange(p_ridge, right_column, nrow = 1, widths = c(0.3, 0.7), la
                       font.label = label_style, label.x = 0, label.y = 1, hjust = -0.2, vjust = 1.2)
 final_figure <- ggarrange(top_block, p_go, ncol = 1, heights = c(1, 0.4), labels = c("", "d"),
                           font.label = label_style, label.x = 0, label.y = 1, hjust = -0.2, vjust = 1.2)
-ggsave("figures/ed5_mfnp_contrast_difference.pdf", final_figure, width = 10, height = 8)
-ggsave("figures/ed5_mfnp_contrast_difference.png", final_figure, width = 10, height = 8, dpi = 600, bg = "white")
+ggsave("figures/ed6_mfnp_contrast_difference.pdf", final_figure, width = 10, height = 8)
+ggsave("figures/ed6_mfnp_contrast_difference.png", final_figure, width = 10, height = 8, dpi = 600, bg = "white")
 
 # 8. Source data ----
 format_pvalue <- function(x) {
@@ -454,15 +474,16 @@ source_data <- list(
     ),
     "Precision_filtering" = pct_area_data,
     "Consensus_all_contrasts" = dea_merge,
+    "Consensus_batch_evidence" = batch_protein_evidence,
     "DEP_classification" = st_dep_batch_stat,
     "Consensus_MF_NP" = st_dep_consensus,
     "GO_enrichment" = st_enrich_summary
 )
 write.xlsx(
     source_data,
-    "tables/SourceData_EDFigure5.xlsx",
+    "tables/SourceData_EDFigure6.xlsx",
     overwrite = TRUE,
     keepNA = TRUE,
     na.string = "NA"
 )
-message("Extended Data Figure 5 completed: figures/ed5_mfnp_contrast_difference.pdf；source data: tables/SourceData_EDFigure5.xlsx")
+message("Extended Data Figure 6 completed: figures/ed6_mfnp_contrast_difference.pdf；source data: tables/SourceData_EDFigure6.xlsx")

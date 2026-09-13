@@ -1,4 +1,4 @@
-# Extended Data Figure 3 | External-cohort sex-effect consistency
+# Extended Data Figure 4 | External-cohort sex-effect consistency
 
 # 0. Setup ----
 source("scripts/_project_setup.R")
@@ -385,11 +385,15 @@ missing_batch_colors <- setdiff(selected_batches, names(batch_palette))
 if (length(missing_batch_colors)) batch_palette[missing_batch_colors] <- scales::hue_pal()(length(missing_batch_colors))
 
 dea_df_multi <- fread("results/dea_df_multi.tsv.gz")
-plasmix_mf_dep <- dea_df_multi %>%
+plasmix_mf_features <- dea_df_multi %>%
     filter(Pair == "M/F", Batch %in% selected_batches,
            (Platform == "DIA" & DataTier == "Baseline") |
            (Platform %in% c("OLK", "SOM") & DataTier == "Calibrated")) %>%
     mutate(UniProt = tstrsplit(UniqueID, "_", fixed = TRUE)[[1]])
+
+# Coverage counts each protein once; average assay effects within each protein and batch for protein-level comparisons.
+plasmix_mf_dep <- plasmix_mf_features %>% filter(is.finite(logFC)) %>%
+    group_by(Platform, Batch, UniProt) %>% summarize(logFC = mean(logFC), N_Features = n_distinct(UniqueID), .groups = "drop")
 
 all_tier1_proteins <- sex_ext_df %>% filter(Tier == "Tier1") %>% pull(UniProt) %>% unique()
 n_total_tier1 <- length(all_tier1_proteins)
@@ -574,8 +578,8 @@ row1 <- ggarrange(p2, p3, p1, ncol = 3, align = "hv", labels = c("a", "b", "c"),
 row2 <- ggarrange(p5, p_ht, nrow = 1, labels = c("d", "e"), widths = c(2, 1),
                   font.label = label_style, label.x = 0, label.y = 1)
 final_assembly <- ggarrange(row1, row2, nrow = 2, heights = c(1, 2.1))
-ggsave("figures/ed3_external_sex_consistency.pdf", final_assembly, width = 10, height = 10)
-ggsave("figures/ed3_external_sex_consistency.png", final_assembly, width = 10, height = 10, dpi = 600, bg = "white")
+ggsave("figures/ed4_external_sex_consistency.pdf", final_assembly, width = 10, height = 10)
+ggsave("figures/ed4_external_sex_consistency.png", final_assembly, width = 10, height = 10, dpi = 600, bg = "white")
 
 # External-cohort validation source data
 format_pvalue <- function(x) {
@@ -621,9 +625,10 @@ output_list <- list(
     "Wellness_BAMSE" = res_p3$plot_df,
     "Source_comparison" = plot_data_a,
     "Plasmix_Tier1" = plot_data_bio,
+    "Plasmix_assay_effects" = plasmix_mf_features %>% filter(UniProt %in% tier1_ids),
     "Batch_correlations" = batch_stats_calc,
     "Correlation_summary" = stats_calc,
     "Tier1_heatmap" = plot_heatmap
 )
-write.xlsx(output_list, "tables/SourceData_EDFigure3.xlsx", overwrite = TRUE, keepNA = TRUE, na.string = "NA")
-message("Extended Data Figure 3 completed; shared results: results/external_sex_effects_long.tsv.gz and results/external_sex_tier_summary.tsv.gz")
+write.xlsx(output_list, "tables/SourceData_EDFigure4.xlsx", overwrite = TRUE, keepNA = TRUE, na.string = "NA")
+message("Extended Data Figure 4 completed; shared results: results/external_sex_effects_long.tsv.gz and results/external_sex_tier_summary.tsv.gz")
