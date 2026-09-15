@@ -27,7 +27,7 @@ meta_sample_analysis <- meta_sample %>% filter(Sample %in% analysis_samples)
 
 feat_meta <- analysis_feature_metadata(fread("data/feature_metadata.tsv.gz"))
 
-lod_status <- fread("results/analyte_detection_status.tsv.gz")
+lod_status <- aggregate_som_detection_status(fread("results/detection_status.tsv.gz"), fread("data/feature_metadata.tsv.gz"))
 missing_detection_columns <- setdiff(analysis_samples, colnames(lod_status))
 if (length(missing_detection_columns)) stop("Detection table is missing columns: ", paste(missing_detection_columns, collapse = ", "))
 

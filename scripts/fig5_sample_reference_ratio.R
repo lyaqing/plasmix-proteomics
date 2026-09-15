@@ -12,7 +12,7 @@ showtext_auto(); showtext_opts(dpi = 600)
 label_style <- list(size = 12, face = "bold")
 
 # 1. Inputs ----
-paths <- c(metadata = "data/study_metadata.xlsx", feature_metadata = "data/feature_metadata.tsv.gz", detection = "results/analyte_detection_status.tsv.gz",
+paths <- c(metadata = "data/study_metadata.xlsx", feature_metadata = "data/feature_metadata.tsv.gz", detection = "results/detection_status.tsv.gz",
            profiles = "data/protein_profiles_long.tsv.gz", dea = "results/dea_df_multi.tsv.gz", dea_consensus = "results/ed6_dea_consensus.tsv.gz")
 missing_inputs <- paths[!file.exists(paths)]
 if (length(missing_inputs)) stop("Missing Figure 5 inputs: \n", paste(missing_inputs, collapse = "\n"),
@@ -23,7 +23,7 @@ study_samples <- c("M", "Y", "P", "X", "F", "N")
 meta_sample <- read_xlsx(paths["metadata"], sheet = "sample") %>% filter(Sample %in% study_samples)
 meta_batch_physics <- read_xlsx(paths["metadata"], sheet = "variance")
 feat_meta <- analysis_feature_metadata(fread(paths["feature_metadata"]))
-lod_status <- fread(paths["detection"])
+lod_status <- aggregate_som_detection_status(fread(paths["detection"]), fread(paths["feature_metadata"]))
 long_df <- aggregate_som_profiles(fread(paths["profiles"])) %>% filter_batch_analysis_features(feat_meta)
 lod_status <- lod_status %>% semi_join(distinct(long_df, Platform, Batch, UniqueID), by = c("Platform", "Batch", "UniqueID"))
 dea_df_multi <- fread(paths["dea"]) %>% semi_join(distinct(long_df, Platform, Batch, UniqueID), by = c("Platform", "Batch", "UniqueID"))

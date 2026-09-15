@@ -8,7 +8,7 @@ source("utils/feature_mapping.R")
 plasmix_theme <- if (is.function(theme_plasmix)) theme_plasmix() else theme_plasmix
 showtext_auto(); showtext_opts(dpi = 600)
 label_style <- list(size = 12, face = "bold")
-paths <- c(metadata = "data/study_metadata.xlsx", feature_metadata = "data/feature_metadata.tsv.gz", profiles = "data/protein_profiles_long.tsv.gz", detection = "results/analyte_detection_status.tsv.gz",
+paths <- c(metadata = "data/study_metadata.xlsx", feature_metadata = "data/feature_metadata.tsv.gz", profiles = "data/protein_profiles_long.tsv.gz", detection = "results/detection_status.tsv.gz",
            physchem = "data/physchem_matrix.tsv.gz", physchem_dictionary = "data/physchem_dictionary.tsv")
 missing_inputs <- paths[!file.exists(paths)]
 if (length(missing_inputs)) stop("Figure 4 is missing the following release inputs:\n", paste(missing_inputs, collapse = "\n"))
@@ -16,7 +16,7 @@ meta_batch <- read_xlsx(paths["metadata"], sheet = "batch")
 feature_metadata <- analysis_feature_metadata(fread(paths["feature_metadata"]))
 # Combine SOMAmers before estimating protein-specific distortion.
 long_df <- aggregate_som_profiles(fread(paths["profiles"])) %>% filter_batch_analysis_features(feature_metadata, strict_platforms = character())
-lod_status <- fread(paths["detection"]) %>% as_tibble() %>% semi_join(distinct(long_df, Platform, Batch, UniqueID), by = c("Platform", "Batch", "UniqueID"))
+lod_status <- aggregate_som_detection_status(fread(paths["detection"]), fread(paths["feature_metadata"])) %>% semi_join(distinct(long_df, Platform, Batch, UniqueID), by = c("Platform", "Batch", "UniqueID"))
 physchem_matrix <- fread(paths["physchem"]) %>% as_tibble()
 physchem_dict <- fread(paths["physchem_dictionary"]) %>% as_tibble()
 meta_batch_ht <- meta_batch %>% filter(Platform %in% c("SOM", "OLK", "DIA"), !Batch %in% c("OLK_P1_B1", "OLK_P1_B2"))

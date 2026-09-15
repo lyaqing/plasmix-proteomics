@@ -597,16 +597,10 @@ if (expected_unique_ids == actual_unique_ids) {
 
 fwrite(as.data.table(detection_status), "results/detection_status.tsv.gz", sep = "\t", na = "NA")
 
-# Keep the original assay detection file for Figure 1 and ED2.
-# Quantitative analyses and ST1 use the aggregated SOM protein units.
+# Quantitative analyses and ST1 derive SOM protein calls from the assay detection file.
 analyte_metadata <- analysis_feature_metadata(feat_meta)
-analyte_detection <- calc_detection_status(aggregate_som_profiles(long_df_filter), meta_sample) %>%
-    mutate(IsDetected = PassedGroup > 0, IsAboveLoD = IsDetected) %>%
-    filter((Platform %in% c("DIA", "AAG") & DataTier == "Baseline") |
-           (Platform %in% c("OLK", "SOM", "NLS") & DataTier == "Calibrated")) %>%
-    rename(AnchorTier = DataTier)
+analyte_detection <- aggregate_som_detection_status(detection_status, feat_meta)
 stopifnot(!anyDuplicated(analyte_detection[c("Platform", "Batch", "UniqueID")]))
-fwrite(as.data.table(analyte_detection), "results/analyte_detection_status.tsv.gz", sep = "\t", na = "NA")
 
 # 11. Detection-summary source data ----
 df_counts <- analyte_detection %>%
@@ -688,7 +682,7 @@ saveWorkbook(wb, "tables/SourceData_AnalyticalFeatureStatistics.xlsx", overwrite
 # 12. Final validation summary ----
 profile_outputs <- c(
     "data/protein_profiles_long.tsv.gz", "data/feature_metadata.tsv.gz", "data/study_metadata.xlsx",
-    "results/detection_status.tsv.gz", "results/analyte_detection_status.tsv.gz",
+    "results/detection_status.tsv.gz",
     "tables/SourceData_AnalyticalFeatureStatistics.xlsx"
 )
 stopifnot(all(file.exists(profile_outputs)))

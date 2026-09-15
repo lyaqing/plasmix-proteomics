@@ -14,14 +14,14 @@ trc_deviation_cutoff <- 0.25
 
 # 1. Inputs ----
 paths <- c(metadata = "data/study_metadata.xlsx", feature_metadata = "data/feature_metadata.tsv.gz",
-           profiles = "data/protein_profiles_long.tsv.gz", detection = "results/analyte_detection_status.tsv.gz")
+           profiles = "data/protein_profiles_long.tsv.gz", detection = "results/detection_status.tsv.gz")
 missing_inputs <- paths[!file.exists(paths)]
 if (length(missing_inputs) > 0) stop("Missing input files: ", paste(missing_inputs, collapse = ", "), call. = FALSE)
 
 meta_sample <- read_xlsx(paths["metadata"], sheet = "sample") %>%
     filter(Sample %in% c("M", "Y", "P", "X", "F", "N"))
 
-lod_status <- fread(paths["detection"]) %>% mutate(Is_Detected = M | Y | P | X | F)
+lod_status <- aggregate_som_detection_status(fread(paths["detection"]), fread(paths["feature_metadata"])) %>% mutate(Is_Detected = M | Y | P | X | F)
 feature_metadata <- analysis_feature_metadata(fread(paths["feature_metadata"]))
 
 long_df <- aggregate_som_profiles(fread(paths["profiles"]))

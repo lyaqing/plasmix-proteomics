@@ -21,6 +21,20 @@ aggregate_som_profiles <- function(data) {
     bind_rows(data %>% filter(Platform != "SOM"), som)
 }
 
+# Derive SOM protein detection from assay-level group calls; all other analytes are unchanged.
+aggregate_som_detection_status <- function(status, feature_metadata) {
+    status <- as_tibble(status)
+    columns <- c("Platform", "Batch", "UniqueID", "M", "F", "Y", "P", "X", "N", "IsDetected", "IsAboveLoD")
+    som_ids <- as_tibble(feature_metadata) %>% filter(Platform == "SOM", !Is_Protein_Group, !Is_Unknown) %>%
+        distinct(Platform, UniqueID, UniProtID)
+    som <- status %>% filter(Platform == "SOM") %>% inner_join(som_ids, by = c("Platform", "UniqueID"), relationship = "many-to-one")
+    if (nrow(som) != sum(status$Platform == "SOM")) stop("SOM detection mapping is incomplete.")
+    som <- som %>% group_by(Platform, Batch, UniProtID) %>%
+        summarize(across(all_of(c("M", "F", "Y", "P", "X", "N")), ~ any(.x %in% TRUE)), .groups = "drop") %>%
+        rename(UniqueID = UniProtID) %>% mutate(IsDetected = M | F | Y | P | X | N, IsAboveLoD = IsDetected)
+    bind_rows(status %>% filter(Platform != "SOM") %>% select(all_of(columns)), som %>% select(all_of(columns)))
+}
+
 analysis_feature_metadata <- function(feature_metadata) {
     data <- as_tibble(feature_metadata)
     som <- data %>% filter(Platform == "SOM", !Is_Protein_Group, !Is_Unknown) %>%

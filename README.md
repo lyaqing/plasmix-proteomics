@@ -28,7 +28,7 @@ Download the files and place them at the following paths:
 | `data/feature_metadata.tsv.gz` | Assay-feature, target and UniProt annotations used to derive batch-specific analysis sets. |
 | `data/physchem_matrix.tsv.gz` | Protein-level physicochemical, structural, localization, and circulating-abundance annotations. |
 | `data/physchem_dictionary.tsv` | Definitions, computation rules, quality summaries, and feature-retention decisions for the physicochemical annotations. |
-| `results/detection_status.tsv.gz` | Feature-by-batch detection summaries and above-LOD indicators. |
+| `results/detection_status.tsv.gz` | Assay-level detection summaries by feature and batch. |
 
 Source Data workbooks are provided with the associated article and are not duplicated in this repository. Raw and third-party inputs are not redistributed here. Their versions, sources, access conditions, and uses are documented in `reference_manifest.tsv`.
 
@@ -43,13 +43,11 @@ The default local layout assumes that non-public or externally downloaded upstre
 
 The complete execution order and script dependencies are documented in [`scripts/README.md`](scripts/README.md).
 
-The public profile retains all harmonized assay features. Figure 1 summarizes protein coverage from the mapped assay records. Protein-level downstream analyses average multiple SOMAmer measurements assigned to the same single accession on the log2 scale, while named analytes from the other platforms remain distinct. Unmapped and multiple-accession features are excluded. Assay-level normalization and stage-specific detection remain available in Extended Data Figure 2. Mapping rules are implemented in `utils/feature_mapping.R`.
-
 The public downstream workflow starts from the six Figshare files listed above. Preparation and external-cohort scripts that require raw, vendor-licensed, publisher-hosted, or restricted resources are retained for methodological transparency but cannot be reproduced from the Figshare files alone.
 
 ## Software environment
 
-Package availability is checked within the analysis scripts. Run the following command from the repository root to record the local R, Bioconductor, package, and optional Python/FreeSASA environment:
+Package availability is checked within the analysis scripts. To record the local software environment, optionally run:
 
 ```bash
 Rscript scripts/export_software_environment.R
