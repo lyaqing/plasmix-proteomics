@@ -6,7 +6,7 @@ By default, internal inputs are read from the sibling `00_data/` directory. Set 
 
 ## Execution order
 
-1. `prepare_profiles_and_detection.R` creates the assay-level public long profile, feature metadata, and the single assay-level detection-status file. The long profile retains protein-group measurements; unmapped and multiple-accession features are excluded from downstream protein-level analyses through `utils/feature_mapping.R`.
+1. `prepare_profiles_and_detection.R` creates the public long profile, feature metadata, and detection-status file.
 2. `prepare_physchem_annotation.R` and `prepare_differential_expression.R` create the reusable physicochemical, differential-expression and MAPD results.
 3. `fig1_profiles_overview.R` and `fig2_titration_benchmark.R` create the first two main figures and the titration/CV results.
 4. `ed1_titration_tolerance.R` and `ed3_som_reshaping_compact.R` use the Figure 2 outputs.
@@ -17,7 +17,7 @@ By default, internal inputs are read from the sibling `00_data/` directory. Set 
 9. `fig6_integration_guidance.R` creates the reusable integration object used by `ed8_reference_background_integration.R` and `ed9_abundance_integration_outcomes.R`.
 10. `ed2_normalization_detection.R` reports assay-level normalization factors and stage-specific detection and may run any time after step 1.
 
-`export_software_environment.R` is optional: run it separately to record the local software environment. No figure or preparation script calls it.
+`export_software_environment.R` is optional and records the local software environment.
 
 Source-data workbooks are written only to `tables/`. Reusable computational outputs and caches are written to `results/` or `cache/`.
 
